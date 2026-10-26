@@ -1,0 +1,197 @@
+name: Build template APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - "tools/**"
+      - "build_apk.py"
+      - ".github/workflows/build.yml"
+  pull_request:
+    paths:
+      - "android/**"
+      - "tools/**"
+      - "build_apk.py"
+  workflow_dispatch:
+    inputs:
+      game_dir:
+        description: "Optional: game folder inside the repo (its name becomes the app name)"
+        required: false
+        default: ""
+      game_name:
+        description: "Optional: game name, for games that are not in the repo"
+        required: false
+        default: ""
+      app_name:
+        description: "Optional: override the application label"
+        required: false
+        default: ""
+      package_id:
+        description: "Optional: override the application id"
+        required: false
+        default: ""
+      orientation:
+        description: "Default screen orientation baked into the template"
+        type: choice
+        options:
+          - sensorLandscape
+          - landscape
+          - portrait
+          - sensor
+          - fullSensor
+          - user
+          - reverseLandscape
+        default: sensorLandscape
+      commit_apk:
+        description: "Commit the built APK to prebuilt/base.apk"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build empty WebView APK
+    runs-on: ubuntu-latest
+    outputs:
+      label: ${{ steps.identity.outputs.label }}
+      package: ${{ steps.identity.outputs.package }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Resolve app identity
+        id: identity
+        env:
+          GAME_DIR: ${{ inputs.game_dir }}
+          GAME_NAME: ${{ inputs.game_name }}
+          APP_NAME: ${{ inputs.app_name }}
+          PACKAGE_ID: ${{ inputs.package_id }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${GAME_DIR}" ]; then args+=(--game-dir "${GAME_DIR}"); else args+=(--name-only); fi
+          name="${APP_NAME:-${GAME_NAME}}"
+          if [ -n "${name}" ]; then args+=(--name "${name}"); fi
+          if [ -z "${GAME_DIR}" ] && [ -z "${name}" ]; then args+=(--name "RPG Maker Game"); fi
+          if [ -n "${PACKAGE_ID}" ]; then args+=(--package "${PACKAGE_ID}"); fi
+
+          label=$(python3 tools/identity.py "${args[@]}" --field name)
+          package=$(python3 tools/identity.py "${args[@]}" --field package_id)
+          {
+            echo "label=${label}"
+            echo "package=${package}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building template for: ${label} (${package})"
+
+      - name: Build APK
+        working-directory: android
+        env:
+          ORIENTATION: ${{ inputs.orientation }}
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --console=plain assembleRelease \
+            -PappLabel="${{ steps.identity.outputs.label }}" \
+            -PapplicationId="${{ steps.identity.outputs.package }}" \
+            -PscreenOrientation="${ORIENTATION:-sensorLandscape}"
+
+      - name: Stage template APK
+        run: |
+          set -euo pipefail
+          mkdir -p prebuilt
+          cp android/app/build/outputs/apk/release/app-release.apk prebuilt/base.apk
+          ls -l prebuilt/base.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpg2android-base-apk
+          path: prebuilt/base.apk
+          if-no-files-found: error
+
+      - name: Commit template APK
+        if: github.event_name == 'workflow_dispatch' && inputs.commit_apk
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add prebuilt/base.apk
+          if git diff --cached --quiet; then
+            echo "prebuilt/base.apk is unchanged"
+          else
+            git commit -m "chore: refresh prebuilt base APK [skip ci]"
+            git push
+          fi
+
+  verify:
+    name: Verify injector on the fresh APK
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rpg2android-base-apk
+          path: prebuilt
+
+      - name: Create a throwaway game folder
+        run: |
+          set -euo pipefail
+          mkdir -p sample-game/js sample-game/data sample-game/icon
+          printf '<!DOCTYPE html><html><body>sample</body></html>' > sample-game/index.html
+          printf 'window.Game = {};' > sample-game/js/main.js
+          printf '{"ok":true}' > sample-game/data/System.json
+          cp android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png sample-game/icon/icon.png
+
+      - name: Inject game and re-sign
+        run: python3 build_apk.py --game-dir sample-game --apk prebuilt/base.apk --out dist --orientation portrait
+
+      - name: Verify with Android build-tools
+        run: |
+          set -euo pipefail
+          apk=$(ls dist/*.apk)
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          echo "using $bt"
+
+          "$bt/apksigner" verify --verbose --print-certs "$apk"
+
+          "$bt/aapt2" dump xmltree --file AndroidManifest.xml "$apk" > manifest.txt
+          grep -q 'package="com\.' manifest.txt
+          grep -q 'screenOrientation' manifest.txt
+
+          python3 - "$apk" <<'PY'
+          import sys, zipfile
+          sys.path.insert(0, ".")
+          from tools import axml
+
+          with zipfile.ZipFile(sys.argv[1]) as apk:
+              info = axml.read_manifest(apk.read("AndroidManifest.xml"))
+          print("manifest:", info)
+          assert str(info["package"]).endswith(".samplegame"), info
+          assert info["label"] == "sample-game", info
+          assert info["orientation"] == 1, info   # portrait
+          PY
+
+          unzip -l "$apk" | grep -q 'assets/www/index.html'
+          unzip -l "$apk" | grep -q 'assets/www/js/main.js'
+          unzip -l "$apk" | grep -q 'assets/www/data/System.json'
+          ! unzip -l "$apk" | grep -q 'assets/www/nw.dll'
+
+          echo "injector checks passed"

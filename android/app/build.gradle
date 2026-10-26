@@ -1,0 +1,45 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Values injected by the GitHub workflow / build_apk.py. Everything has a
+// sane default so "gradle assembleRelease" on its own still produces a
+// working (empty) WebView app.
+def appLabel = (project.findProperty('appLabel') ?: 'RPG2Android').toString()
+def appId = (project.findProperty('applicationId') ?: 'com.rpg2android.webview').toString()
+def screenOrientation = (project.findProperty('screenOrientation') ?: 'sensorLandscape').toString()
+
+android {
+    namespace 'com.rpg2android'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId appId
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+        manifestPlaceholders = [screenOrientation: screenOrientation]
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            // A debug key is fine: build_apk.py re-signs the final APK anyway.
+            signingConfig signingConfigs.debug
+        }
+        debug {
+            manifestPlaceholders = [screenOrientation: screenOrientation]
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+    }
+}
