@@ -167,7 +167,20 @@ jobs:
           printf '<!DOCTYPE html><html><body>sample</body></html>' > sample-game/index.html
           printf 'window.Game = {};' > sample-game/js/main.js
           printf '{"ok":true}' > sample-game/data/System.json
-          cp android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png sample-game/icon/icon.png
+          python3 - <<'PY'
+          import struct, zlib
+
+          def chunk(tag, data):
+              return (struct.pack('>I', len(data)) + tag + data
+                      + struct.pack('>I', zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+          raw = b'\x00' + b'\xff\x00\x00\xff'  # 1x1 red pixel
+          png = (b'\x89PNG\r\n\x1a\n'
+                 + chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 6, 0, 0, 0))
+                 + chunk(b'IDAT', zlib.compress(raw))
+                 + chunk(b'IEND', b''))
+          open('sample-game/icon/icon.png', 'wb').write(png)
+          PY
 
       - name: Inject game and re-sign
         run: python3 build_apk.py --game-dir sample-game --apk prebuilt/base.apk --out dist --orientation portrait
@@ -187,12 +200,20 @@ jobs:
 
           python3 - "$apk" <<'PY'
           import sys, zipfile
+          from pathlib import Path
+
           sys.path.insert(0, ".")
           from tools import axml
 
+          icon = Path("sample-game/icon/icon.png").read_bytes()
           with zipfile.ZipFile(sys.argv[1]) as apk:
               info = axml.read_manifest(apk.read("AndroidManifest.xml"))
+              icons = [n for n in apk.namelist()
+                       if n.startswith("res/mipmap") and n.endswith("ic_launcher.png")]
+              assert icons, "template has no readable res/mipmap-*/ic_launcher.png"
+              assert all(apk.read(n) == icon for n in icons), icons
           print("manifest:", info)
+          print("launcher icons replaced:", icons)
           assert str(info["package"]).endswith(".samplegame"), info
           assert info["label"] == "sample-game", info
           assert info["orientation"] == 1, info   # portrait

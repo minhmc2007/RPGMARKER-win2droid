@@ -90,7 +90,7 @@ def inject(
     if output.exists():
         output.unlink()
 
-    stats = {"files": 0, "bytes": 0, "icon": icon_source}
+    stats = {"files": 0, "bytes": 0, "icon": icon_source, "icon_replaced": 0}
     writer = apkzip.ApkWriter(output)
     try:
         with zipfile.ZipFile(template) as zin:
@@ -110,6 +110,7 @@ def inject(
                     r"res/mipmap[^/]*/ic_launcher\.png", name
                 ):
                     data = icon_bytes
+                    stats["icon_replaced"] += 1
                 writer.add_bytes(name, data, info.compress_type)
 
         for path, rel in _iter_game_files(game.content):
@@ -149,6 +150,9 @@ def build(args: argparse.Namespace) -> int:
     stats = inject(template, game, output, orientation=args.orientation, icon=args.icon)
     print(f"injected:   {stats['files']} files, {stats['bytes'] / 1e6:.1f} MB"
           + (f", icon {stats['icon']}" if stats["icon"] else ""))
+    if stats["icon"] and not stats["icon_replaced"]:
+        print("warning:    launcher icon not replaced (no res/mipmap-*/ic_launcher.png "
+              "in the template)", file=sys.stderr)
 
     key_path, cert_path = signer.ensure_debug_key(key_dir)
     key = signer.load_key(key_path, cert_path)
