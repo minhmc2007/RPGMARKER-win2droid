@@ -91,12 +91,28 @@ editor and the v2 signer are plain standard library code.
 * Back button sends <kbd>Esc</kbd> (cancel/menu), press twice to exit.
 * Game audio/timers pause when the app goes to the background.
 
+## On-device diagnostics
+
+Every injected APK carries `assets/www/rpg2android/host.js`, which the build
+script inserts into the game's `index.html` before any game script runs. It does
+not change gameplay; it records JS errors, failed resources and the rendering
+state (WebGL renderer, frame count, canvas geometry, sampled pixels) and shows
+the report on screen:
+
+* tap the small `i` in the top-right corner, or
+* it opens by itself after a JS error, or
+* it opens by itself when the canvas has painted nothing but black for a while.
+
+The same lines are mirrored to logcat under the `RPG2Android` tag, and
+`chrome://inspect` works against the WebView when a computer is connected.
+
 ## Repo layout
 
 ```
 android/                 Java WebView app + Gradle project (built only in CI)
   app/src/main/java/com/rpg2android/MainActivity.java
   app/src/main/assets/www/index.html   placeholder, replaced at inject time
+  app/src/main/assets/rpg2android/host.js   on-device diagnostics (injected)
 build_apk.py             CLI: inject a game into the template and sign it
 tools/identity.py        game root detection, name + package id
 tools/axml.py            binary AndroidManifest.xml reader/writer

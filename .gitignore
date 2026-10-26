@@ -22,3 +22,4 @@ venv/
 *.jks
 *.p12
 *.log
+android/javac.*.args

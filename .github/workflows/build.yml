@@ -222,6 +222,10 @@ jobs:
           unzip -l "$apk" | grep -q 'assets/www/index.html'
           unzip -l "$apk" | grep -q 'assets/www/js/main.js'
           unzip -l "$apk" | grep -q 'assets/www/data/System.json'
+          unzip -l "$apk" | grep -q 'assets/www/rpg2android/host.js'
           ! unzip -l "$apk" | grep -q 'assets/www/nw.dll'
+
+          # the diagnostics script must be reachable from the game page
+          unzip -p "$apk" assets/www/index.html | grep -q 'rpg2android/host.js'
 
           echo "injector checks passed"

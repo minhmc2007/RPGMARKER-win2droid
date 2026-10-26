@@ -9,6 +9,7 @@ import android.util.Log;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -38,8 +39,12 @@ public class MainActivity extends Activity {
 
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
+        // Lets "chrome://inspect" on a connected computer see this WebView.
+        WebView.setWebContentsDebuggingEnabled(true);
+
         webView = new WebView(this);
         webView.setBackgroundColor(Color.BLACK);
+        webView.addJavascriptInterface(new HostBridge(), "RPG2Host");
         webView.setLongClickable(false);
         webView.setHapticFeedbackEnabled(false);
         webView.setOnLongClickListener(new View.OnLongClickListener() {
@@ -88,6 +93,18 @@ public class MainActivity extends Activity {
             webView.loadUrl(START_URL);
         } else {
             webView.restoreState(savedInstanceState);
+        }
+    }
+
+    /** Receives the diagnostics that assets/rpg2android/host.js collects. */
+    private static final class HostBridge {
+        @JavascriptInterface
+        public void log(String message) {
+            if (message == null) {
+                return;
+            }
+            String text = message.length() > 2000 ? message.substring(0, 2000) : message;
+            Log.i("RPG2Android", text);
         }
     }
 
