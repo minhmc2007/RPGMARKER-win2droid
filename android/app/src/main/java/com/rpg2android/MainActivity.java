@@ -81,14 +81,21 @@ public class MainActivity extends Activity {
             }
         });
 
+        // RPG Maker only advances its scene while document.hasFocus() is true,
+        // so the WebView itself has to hold window focus.
+        webView.setFocusable(true);
+        webView.setFocusableInTouchMode(true);
+
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
+        root.setFocusable(false);
         root.addView(webView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
         setContentView(root);
 
         hideSystemUi();
+        webView.requestFocus();
         if (savedInstanceState == null) {
             webView.loadUrl(START_URL);
         } else {
@@ -123,6 +130,9 @@ public class MainActivity extends Activity {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
             hideSystemUi();
+            if (webView != null) {
+                webView.requestFocus();
+            }
         }
     }
 
@@ -183,6 +193,7 @@ public class MainActivity extends Activity {
         if (webView != null) {
             webView.resumeTimers();
             webView.onResume();
+            webView.requestFocus();
         }
     }
 

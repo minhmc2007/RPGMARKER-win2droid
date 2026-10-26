@@ -27,6 +27,11 @@
     var reportTimer = null;
     var autoOpened = false;
 
+    var traceLines = [];
+    var traceHook = false;
+    var focusWarned = false;
+    var watchdog = { scene: "", since: 0, fired: false };
+
     var probe = {
         hooked: false,
         noGl: 0,
@@ -68,6 +73,17 @@
             lines.shift();
         }
         forward(kind, text);
+        if (panelVisible) {
+            renderPanel();
+        }
+    }
+
+    function trace(text) {
+        traceLines.push("[" + stamp() + "] " + text);
+        if (traceLines.length > 14) {
+            traceLines.shift();
+        }
+        forward("trace", text);
         if (panelVisible) {
             renderPanel();
         }
@@ -124,6 +140,112 @@
     });
 
     // ---------------------------------------------------------------- probing
+
+    function hookGameActive() {
+        // MZ only updates the current scene while window.top.document.hasFocus().
+        // In an Android WebView that is a race: the page can be fully visible and
+        // still report no focus, which freezes the game (audio keeps playing, the
+        // canvas keeps rendering the last frame). A visible page is an active
+        // game, so treat visibility as the condition.
+        var manager = window.SceneManager;
+        if (!manager || manager.__r2aGameActive ||
+                typeof manager.isGameActive !== "function") {
+            return;
+        }
+        manager.__r2aGameActive = true;
+        var original = manager.isGameActive;
+        manager.isGameActive = function () {
+            try {
+                if (document.visibilityState === "hidden") {
+                    return false;
+                }
+                if (original.apply(manager, arguments)) {
+                    return true;
+                }
+                if (document.visibilityState === "visible") {
+                    if (!focusWarned) {
+                        focusWarned = true;
+                        add("warn", "no document focus; keeping the game running while visible");
+                    }
+                    return true;
+                }
+                return false;
+            } catch (e) {
+                return true;
+            }
+        };
+    }
+
+    function hookSceneTrace() {
+        var manager = window.SceneManager;
+        if (traceHook || !manager || typeof manager.goto !== "function" ||
+                typeof window.Scene_Base === "undefined") {
+            return;
+        }
+        traceHook = true;
+
+        var originalGoto = manager.goto;
+        manager.goto = function (sceneClass) {
+            trace("goto " + (sceneClass && sceneClass.name ? sceneClass.name : "?"));
+            return originalGoto.apply(manager, arguments);
+        };
+
+        var originalChangeScene = manager.changeScene;
+        if (typeof originalChangeScene === "function") {
+            manager.changeScene = function () {
+                var before = manager._scene ? manager._scene.constructor.name : "-";
+                var result = originalChangeScene.apply(manager, arguments);
+                var after = manager._scene ? manager._scene.constructor.name : "-";
+                if (before !== after) {
+                    trace("scene " + before + " -> " + after);
+                }
+                return result;
+            };
+        }
+
+        var originalCatch = manager.catchException;
+        if (typeof originalCatch === "function") {
+            manager.catchException = function (error) {
+                add("jsfail", "caught " + describe(error));
+                return originalCatch.apply(manager, arguments);
+            };
+        }
+
+        var base = window.Scene_Base.prototype;
+        var originalFadeIn = base.startFadeIn;
+        base.startFadeIn = function (duration, white) {
+            trace("fadeIn " + this.constructor.name + " d=" + duration);
+            return originalFadeIn.apply(this, arguments);
+        };
+        var originalFadeOut = base.startFadeOut;
+        base.startFadeOut = function (duration, white) {
+            trace("fadeOut " + this.constructor.name + " d=" + duration);
+            return originalFadeOut.apply(this, arguments);
+        };
+    }
+
+    function runWatchdog() {
+        if (watchdog.fired) {
+            return;
+        }
+        var manager = window.SceneManager;
+        if (!manager || !manager._scene) {
+            return;
+        }
+        var name = manager._scene.constructor.name || "";
+        if (watchdog.scene !== name) {
+            watchdog.scene = name;
+            watchdog.since = Date.now();
+            return;
+        }
+        if (/splash/i.test(name) && Date.now() - watchdog.since > 25000) {
+            watchdog.fired = true;
+            add("warn", "watchdog: " + name + " stuck for 25s, forcing Scene_Title");
+            if (typeof window.Scene_Title !== "undefined") {
+                manager.goto(window.Scene_Title);
+            }
+        }
+    }
 
     function hookRenderProbe() {
         var G = window.Graphics;
@@ -260,9 +382,10 @@
         var body = document.body;
         return (
             "view inner=" + window.innerWidth + "x" + window.innerHeight +
-            " doc=" + (doc ? doc.clientWidth + "x" + doc.clientHeight : "?") +
-            " body=" + (body ? body.clientWidth + "x" + body.clientHeight : "?") +
-            " dpr=" + (window.devicePixelRatio || 1)
+            " doc=" + (doc ? doc.clientWidth + "x" + doc.clientHeight : "?") +            "body=" + (body ? body.clientWidth + "x" + body.clientHeight : "?") +
+            " dpr=" + (window.devicePixelRatio || 1) +
+            " focus=" + (document.hasFocus() ? 1 : 0) +
+            " vis=" + document.visibilityState
         );
     }
 
@@ -287,20 +410,58 @@
         return "video " + parts.join(" | ");
     }
 
+    function round(value) {
+        if (typeof value !== "number") {
+            return String(value);
+        }
+        return String(Math.round(value * 100) / 100);
+    }
+
     function sceneInfo() {
         try {
             var manager = window.SceneManager;
             if (!manager || !manager._scene) {
                 return "scene=none";
             }
-            return (
-                "scene " + manager._scene.constructor.name +
-                " children=" + manager._scene.children.length +
-                " fade=" + (Math.round((manager._scene._fadeSign || 0) * 100) / 100)
-            );
+            var scene = manager._scene;
+            var info = "scene " + scene.constructor.name +
+                " children=" + scene.children.length +
+                " start=" + (scene.isStarted && scene.isStarted() ? 1 : 0) +
+                " active=" + (scene._active ? 1 : 0) +
+                " sign=" + (scene._fadeSign | 0) +
+                " fadeOp=" + round(scene._fadeOpacity) +
+                " fadeDur=" + (scene._fadeDuration | 0) +
+                " filter=" + (scene._colorFilter ? 1 : 0) +
+                " next=" + (manager._nextScene ? manager._nextScene.constructor.name : "-");
+            if (scene._waitTime !== undefined) {
+                info += " wait=" + scene._waitTime + " idx=" + scene._splashIndex;
+            }
+            var splash = scene._originalSplash;
+            if (splash) {
+                var bitmap = splash.bitmap;
+                if (!bitmap) {
+                    info += " bmp=none";
+                } else {
+                    info += " bmp=" + round(bitmap.width) + "x" + round(bitmap.height) +
+                        " ready=" + (bitmap.isReady ? (bitmap.isReady() ? 1 : 0) : "?") +
+                        " err=" + (bitmap.isError ? (bitmap.isError() ? 1 : 0) : "?") +
+                        " op=" + (splash.opacity | 0) +
+                        " vis=" + (splash.visible ? 1 : 0);
+                }
+            }
+            return info;
         } catch (e) {
             return "scene=?" + describe(e);
         }
+    }
+
+    function errorPrinterInfo() {
+        var box = document.getElementById("errorPrinter");
+        if (!box) {
+            return "errorbox=none";
+        }
+        var text = (box.innerText || box.textContent || "").replace(/\s+/g, " ").trim();
+        return "errorbox=" + (text || "(empty)");
     }
 
     function audioInfo() {
@@ -351,12 +512,15 @@
             viewInfo(),
             canvasInfo(),
             graphicsInfo(),
+            errorPrinterInfo(),
             glInfo(),
             probeInfo(),
             sceneInfo(),
             mediaInfo(),
             audioInfo(),
             errorInfo(),
+            "trace",
+            "    " + (traceLines.slice(-10).join("\n    ") || "(empty)"),
             "log",
             "    " + (lines.slice(-10).join("\n    ") || "(empty)")
         ].join("\n");
@@ -426,7 +590,9 @@
             renderPanel();
             if (!reportTimer) {
                 reportTimer = setInterval(function () {
+                    hookGameActive();
                     hookRenderProbe();
+                    hookSceneTrace();
                     renderPanel();
                 }, REPORT_INTERVAL_MS);
             }
@@ -464,7 +630,10 @@
 
     function tick() {
         ensureUi();
+        hookGameActive();
         hookRenderProbe();
+        hookSceneTrace();
+        runWatchdog();
         nudgeLayout();
         if (!autoOpened && probe.samples >= 8 && probe.lit === 0 && !probe.contextLost) {
             autoOpened = true;

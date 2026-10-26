@@ -88,6 +88,11 @@ editor and the v2 signer are plain standard library code.
 * DOM storage + database enabled, so **saves work** (RPG Maker stores them in
   `localStorage`, which lives inside the app and is wiped if you uninstall).
 * `file://` XHR allowed, media autoplay allowed (needed for audio/BGM).
+* The WebView is given window focus explicitly, and the injected host script
+  keeps RPG Maker updating whenever the page is visible. MZ otherwise skips
+  scene updates unless `window.top.document.hasFocus()` is true, which is
+  unreliable inside a WebView and freezes the game on a black splash screen
+  while the music keeps playing.
 * Back button sends <kbd>Esc</kbd> (cancel/menu), press twice to exit.
 * Game audio/timers pause when the app goes to the background.
 
