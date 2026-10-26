@@ -66,7 +66,16 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      - name: Android SDK
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME}"
+          ls "${ANDROID_HOME}/platforms" "${ANDROID_HOME}/build-tools"
+          if [ ! -d "${ANDROID_HOME}/platforms/android-34" ]; then
+            sdkmanager=$(ls "${ANDROID_HOME}"/cmdline-tools/*/bin/sdkmanager | head -1)
+            yes | "$sdkmanager" --licenses > /dev/null 2>&1 || true
+            yes | "$sdkmanager" "platforms;android-34" "build-tools;34.0.0"
+          fi
 
       - uses: gradle/actions/setup-gradle@v4
         with:
