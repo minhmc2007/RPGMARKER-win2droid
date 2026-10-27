@@ -125,8 +125,12 @@ open the editor:
 | `+ ADD` | add a button (defaults to `Z`, 48 px, circle) |
 | drag a button | move it |
 | drag its corner dot | resize it (circles stay round) |
-| bottom panel | label, key (Esc…F12, letters, digits, arrows, modifiers), shape (circle / round / square / pill), size, opacity, delete |
+| bottom panel | label (empty = unlabelled button, `CLR` clears it), key (Esc…F12, letters, digits, arrows, modifiers), shape (circle / round / square / pill), size, opacity, delete |
 | `DONE` | leave the editor, keep the buttons |
+
+RPG Maker cancels <kbd>Backspace</kbd>, <kbd>Tab</kbd> and the arrow keys on the
+document, which used to make text fields in the editor impossible to edit; the
+overlay keeps those keystrokes to itself while one of its fields has focus.
 
 The layout is stored in `localStorage` (`r2a.controls.v1`), so it survives
 restarts and is kept per app (not per save file). Positions are viewport

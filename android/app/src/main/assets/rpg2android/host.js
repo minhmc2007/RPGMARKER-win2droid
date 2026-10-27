@@ -1370,7 +1370,7 @@
         }
         var item = {
             id: "b" + pad.seq++,
-            label: typeof raw.label === "string" && raw.label.length ? raw.label.slice(0, 8) : "?",
+            label: typeof raw.label === "string" ? raw.label.slice(0, 8) : "?",
             kc: kc,
             code: typeof raw.code === "string" ? raw.code : "",
             key: typeof raw.key === "string" ? raw.key : "",
@@ -1726,6 +1726,19 @@
 
     // ------------------------------------------------------------ pad: editor
 
+    function stopGameKeys(element) {
+        // RPG Maker cancels Backspace, Tab, PgUp/PgDn and the arrow keys on the
+        // document (Input._shouldPreventDefault), which leaves a text field in
+        // the overlay unable to delete a character or move its caret. Keep the
+        // keystrokes inside the overlay while one of its fields has focus.
+        var swallow = function (event) {
+            event.stopPropagation();
+        };
+        element.addEventListener("keydown", swallow);
+        element.addEventListener("keyup", swallow);
+        element.addEventListener("keypress", swallow);
+    }
+
     function chromeButton(text, onClick, accent) {
         var el = document.createElement("div");
         el.textContent = text;
@@ -1839,6 +1852,7 @@
             panel.addEventListener("touchstart", function (event) {
                 event.stopPropagation();
             }, { passive: true });
+            stopGameKeys(panel);
 
             var head = document.createElement("div");
             head.setAttribute("style", [
@@ -1929,7 +1943,7 @@
             return;
         }
         pad.panel.style.display = "block";
-        pad.panelTitle.textContent = "BUTTON \u00b7 " + item.label;
+        pad.panelTitle.textContent = item.label ? "BUTTON \u00b7 " + item.label : "BUTTON";
 
         var labelInput = document.createElement("input");
         labelInput.id = "r2aPadLabel";
@@ -1938,12 +1952,28 @@
         labelInput.value = item.label;
         labelInput.setAttribute("style", fieldStyle());
         labelInput.addEventListener("input", function () {
-            item.label = (labelInput.value || "?").slice(0, 8);
+            item.label = labelInput.value.slice(0, 8);
             placePadButton(item, pad.els[item.id]);
-            pad.panelTitle.textContent = "BUTTON \u00b7 " + item.label;
+            pad.panelTitle.textContent = item.label ? "BUTTON \u00b7 " + item.label : "BUTTON";
             savePad();
         });
-        pad.panelBody.appendChild(panelRow("Label", labelInput));
+
+        // Backspace now works, but a one-tap clear is friendlier than eight taps.
+        var labelClear = chromeButton("CLR", function () {
+            labelInput.value = "";
+            item.label = "";
+            placePadButton(item, pad.els[item.id]);
+            pad.panelTitle.textContent = "BUTTON";
+            savePad();
+        });
+        labelClear.id = "r2aPadLabelClear";
+        labelClear.setAttribute("style", labelClear.getAttribute("style") + ";padding:0 9px;flex:0 0 auto");
+
+        var labelWrap = document.createElement("div");
+        labelWrap.setAttribute("style", "display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0");
+        labelWrap.appendChild(labelInput);
+        labelWrap.appendChild(labelClear);
+        pad.panelBody.appendChild(panelRow("Label", labelWrap));
 
         var keySelect = document.createElement("select");
         keySelect.id = "r2aPadKey";
