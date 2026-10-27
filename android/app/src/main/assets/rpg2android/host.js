@@ -1281,6 +1281,13 @@
         return { w: w > 0 ? w : 1, h: h > 0 ? h : 1 };
     }
 
+    function padViewportReady() {
+        // A WebView that reports 0x0 during boot would turn the default sizes
+        // into full-screen buttons, and they would be saved that way.
+        var v = padViewport();
+        return Math.min(v.w, v.h) >= 64;
+    }
+
     function clamp(value, low, high) {
         return value < low ? low : value > high ? high : value;
     }
@@ -1687,7 +1694,7 @@
     }
 
     function ensurePad() {
-        if (pad.root || !document.body) {
+        if (pad.root || !document.body || !padViewportReady()) {
             return;
         }
         var root = document.createElement("div");
@@ -2124,6 +2131,9 @@
 
     function openMapper() {
         ensurePad();
+        if (!pad.root) {
+            return;
+        }
         ensureMapperChrome();
         if (!pad.items || !pad.items.length) {
             pad.items = padDefaultLayout();
