@@ -93,23 +93,34 @@ editor and the v2 signer are plain standard library code.
   scene updates unless `window.top.document.hasFocus()` is true, which is
   unreliable inside a WebView and freezes the game on a black splash screen
   while the music keeps playing.
-* Back button sends <kbd>Esc</kbd> (cancel/menu), press twice to exit.
+* Back button closes the virtual keyboard or the diagnostics panel if one is
+  open, otherwise sends <kbd>Esc</kbd> (cancel/menu); press twice to exit.
 * Game audio/timers pause when the app goes to the background.
 
-## On-device diagnostics
+## Shell overlay: diagnostics and virtual keyboard
 
-Every injected APK carries `assets/www/rpg2android/host.js`, which the build
-script inserts into the game's `index.html` before any game script runs. It does
-not change gameplay; it records JS errors, failed resources and the rendering
-state (WebGL renderer, frame count, canvas geometry, sampled pixels) and shows
-the report on screen:
+`android/app/src/main/assets/rpg2android/host.js` ships **inside the app**, not
+inside the game. `MainActivity` reads it and evaluates it into the page once the
+document is committed, so the game's own `index.html` and every other game file
+stay byte-identical to what the game shipped with. The overlay does not change
+gameplay.
 
-* tap the small `i` in the top-right corner, or
-* it opens by itself after a JS error, or
-* it opens by itself when the canvas has painted nothing but black for a while.
+**Diagnostics panel.** Tap the small `i` in the top-right corner; it also opens
+by itself after a JS error or when the canvas has painted nothing but black for
+a while. It reports JS errors, failed resources and the rendering state (WebGL
+renderer, frame count, canvas geometry, sampled pixels). Close it with the `✕`
+button in its header. The same lines are mirrored to logcat under the
+`RPG2Android` tag, and `chrome://inspect` works against the WebView when a
+computer is connected.
 
-The same lines are mirrored to logcat under the `RPG2Android` tag, and
-`chrome://inspect` works against the WebView when a computer is connected.
+**Virtual keyboard.** The keyboard icon next to the `i` opens a translucent US
+laptop layout over the bottom of the screen — Esc, F1–F12, Tab, Caps, Shift,
+Ctrl, Alt, Enter, Backspace, Delete and the arrow keys — with the game still
+visible through the blurred, tinted backdrop. `✕` (or the hardware back button)
+closes it. Keys are delivered as real key events, so they drive RPG Maker's
+input; if a text field has focus (e.g. a plugin's name entry), typed characters
+and Backspace/Delete edit it directly. Shift/Ctrl/Alt latch for one keypress;
+tap twice to lock them (shown with an amber outline).
 
 ## Repo layout
 
@@ -117,7 +128,7 @@ The same lines are mirrored to logcat under the `RPG2Android` tag, and
 android/                 Java WebView app + Gradle project (built only in CI)
   app/src/main/java/com/rpg2android/MainActivity.java
   app/src/main/assets/www/index.html   placeholder, replaced at inject time
-  app/src/main/assets/rpg2android/host.js   on-device diagnostics (injected)
+  app/src/main/assets/rpg2android/host.js   shell overlay: diagnostics + keyboard
 build_apk.py             CLI: inject a game into the template and sign it
 tools/identity.py        game root detection, name + package id
 tools/axml.py            binary AndroidManifest.xml reader/writer

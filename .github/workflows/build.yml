@@ -222,10 +222,12 @@ jobs:
           unzip -l "$apk" | grep -q 'assets/www/index.html'
           unzip -l "$apk" | grep -q 'assets/www/js/main.js'
           unzip -l "$apk" | grep -q 'assets/www/data/System.json'
-          unzip -l "$apk" | grep -q 'assets/www/rpg2android/host.js'
           ! unzip -l "$apk" | grep -q 'assets/www/nw.dll'
 
-          # the diagnostics script must be reachable from the game page
-          unzip -p "$apk" assets/www/index.html | grep -q 'rpg2android/host.js'
+          # the overlay is part of the shell, and nothing is injected into the game
+          unzip -l "$apk" | grep -q 'assets/rpg2android/host.js'
+          unzip -p "$apk" assets/rpg2android/host.js | grep -q 'r2aKeyboard'
+          ! unzip -l "$apk" | grep -q 'assets/www/rpg2android/'
+          unzip -p "$apk" assets/www/index.html | cmp -s - sample-game/index.html
 
           echo "injector checks passed"

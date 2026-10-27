@@ -33,10 +33,10 @@ SKIP_FILES = {"icudtl.dat", "v8_context_snapshot.bin", "debug.log"}
 MAX_ENTRY_BYTES = 0xFFFFFFFF - 1
 MAX_TOTAL_BYTES = 3_800_000_000
 
-# Diagnostics shim: loaded by the game's index.html before any game script.
+# Shell overlay (diagnostics panel + virtual keyboard). MainActivity reads it
+# from the APK's own assets at runtime, so game files are never touched.
 HOST_SOURCE = REPO_ROOT / "android" / "app" / "src" / "main" / "assets" / "rpg2android" / "host.js"
-HOST_ENTRY = "assets/www/rpg2android/host.js"
-HOST_TAG = b'<script src="rpg2android/host.js"></script>'
+HOST_ENTRY = "assets/rpg2android/host.js"
 
 
 class BuildError(RuntimeError):
@@ -58,21 +58,6 @@ def _iter_game_files(content: Path):
         if path.suffix.lower() in SKIP_SUFFIXES or path.name.lower() in SKIP_FILES:
             continue
         yield path, rel
-
-
-def _patch_index_html(data: bytes) -> bytes:
-    """Insert the diagnostics script before the game's first script tag."""
-    if HOST_TAG in data:
-        return data
-    lowered = data.lower()
-    insert_at = -1
-    for marker in (b"<script", b"</head>", b"</body>"):
-        index = lowered.find(marker)
-        if index >= 0 and (insert_at < 0 or index < insert_at):
-            insert_at = index
-    if insert_at < 0:
-        return data + b"\n" + HOST_TAG + b"\n"
-    return data[:insert_at] + HOST_TAG + b"\n    " + data[insert_at:]
 
 
 def _find_game_icon(content: Path) -> Path | None:
@@ -112,7 +97,7 @@ def inject(
         output.unlink()
 
     stats = {"files": 0, "bytes": 0, "icon": icon_source, "icon_replaced": 0,
-             "host": False, "index_patched": False}
+             "host": False}
     writer = apkzip.ApkWriter(output)
     try:
         with zipfile.ZipFile(template) as zin:
@@ -145,17 +130,11 @@ def inject(
                     "game is larger than ~3.8 GB, which does not fit in a ZIP32 APK. "
                     "Remove unused assets (audio/images) and retry."
                 )
-            arcname = "assets/www/" + rel.as_posix()
-            if rel.as_posix() == "index.html":
-                patched = _patch_index_html(path.read_bytes())
-                stats["index_patched"] = patched != path.read_bytes()
-                writer.add_bytes(arcname, patched)
-            else:
-                writer.add_file(path, arcname)
+            writer.add_file(path, "assets/www/" + rel.as_posix())
             stats["files"] += 1
 
         if not HOST_SOURCE.is_file():
-            raise BuildError(f"diagnostics script missing: {HOST_SOURCE}")
+            raise BuildError(f"shell overlay missing: {HOST_SOURCE}")
         writer.add_file(HOST_SOURCE, HOST_ENTRY)
         stats["host"] = True
     finally:
@@ -183,9 +162,6 @@ def build(args: argparse.Namespace) -> int:
     stats = inject(template, game, output, orientation=args.orientation, icon=args.icon)
     print(f"injected:   {stats['files']} files, {stats['bytes'] / 1e6:.1f} MB"
           + (f", icon {stats['icon']}" if stats["icon"] else ""))
-    if not stats["index_patched"]:
-        print("warning:    index.html was not patched, on-device diagnostics "
-              "will not load", file=sys.stderr)
     if stats["icon"] and not stats["icon_replaced"]:
         print("warning:    launcher icon not replaced (no res/mipmap-*/ic_launcher.png "
               "in the template)", file=sys.stderr)

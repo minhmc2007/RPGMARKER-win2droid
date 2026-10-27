@@ -11,11 +11,16 @@ import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
+import android.webkit.ValueCallback;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 
 /**
  * Minimal WebView host for RPG Maker MV / MZ games.
@@ -31,6 +36,7 @@ public class MainActivity extends Activity {
 
     private WebView webView;
     private long lastBackPress = 0L;
+    private String hostScript;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -72,7 +78,25 @@ public class MainActivity extends Activity {
         settings.setSupportMultipleWindows(false);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
 
-        webView.setWebViewClient(new WebViewClient());
+        // The overlay (diagnostics panel + virtual keyboard) is part of the
+        // shell, never of the game: it is read from this APK's own assets and
+        // evaluated into whatever page the WebView loads, so the game files are
+        // left exactly as shipped.
+        hostScript = readAsset("rpg2android/host.js");
+
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                super.onPageCommitVisible(view, url);
+                injectHostScript();
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                injectHostScript();
+            }
+        });
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onConsoleMessage(ConsoleMessage message) {
@@ -101,6 +125,29 @@ public class MainActivity extends Activity {
         } else {
             webView.restoreState(savedInstanceState);
         }
+    }
+
+    private String readAsset(String name) {
+        try (InputStream in = getAssets().open(name);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                out.write(buffer, 0, read);
+            }
+            return out.toString("UTF-8");
+        } catch (IOException e) {
+            Log.w(TAG, "overlay asset missing: " + name, e);
+            return null;
+        }
+    }
+
+    /** Runs assets/rpg2android/host.js in the page; it is idempotent. */
+    private void injectHostScript() {
+        if (webView == null || hostScript == null || hostScript.isEmpty()) {
+            return;
+        }
+        webView.evaluateJavascript(hostScript + "\n//# sourceURL=rpg2android/host.js", null);
     }
 
     /** Receives the diagnostics that assets/rpg2android/host.js collects. */
@@ -160,6 +207,25 @@ public class MainActivity extends Activity {
             webView.goBack();
             return;
         }
+        if (webView == null) {
+            backFallback();
+            return;
+        }
+        // Let the overlay consume the press first (close the keyboard/panel).
+        webView.evaluateJavascript(
+                "(window.RPG2Android && RPG2Android.handleBack)" +
+                        " ? RPG2Android.handleBack() : false",
+                new ValueCallback<String>() {
+                    @Override
+                    public void onReceiveValue(String value) {
+                        if (!"true".equals(value)) {
+                            backFallback();
+                        }
+                    }
+                });
+    }
+
+    private void backFallback() {
         sendEscape();
         long now = SystemClock.uptimeMillis();
         if (now - lastBackPress < 2000L) {
