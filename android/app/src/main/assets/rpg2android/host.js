@@ -1904,7 +1904,9 @@
             return;
         }
         var v = padViewport();
-        pad.sizeSlider.__r2aValue.textContent = Math.round(item.w * v.w) + "px";
+        var px = Math.round(item.w * v.w);
+        pad.sizeSlider.value = String(px);
+        pad.sizeSlider.__r2aValue.textContent = px + "px";
     }
 
     function renderInspector() {
@@ -2075,7 +2077,7 @@
         var size = Math.max(48, Math.round(Math.min(v.w, v.h) * 0.16));
         var item = {
             id: "b" + pad.seq++,
-            label: "A",
+            label: "Z",
             kc: 90, code: "KeyZ", key: "z",
             x: 0.5, y: 0.42,
             w: size / v.w, h: size / v.h,
@@ -2109,10 +2111,13 @@
     function setToolbarVisible(visible) {
         // The editor bar owns the top of the screen; the small corner icons
         // would sit on top of its DONE button.
-        var icons = [button, kbButton, pad.button];
+        if (button) {
+            button.style.display = visible ? "" : "none";
+        }
+        var icons = [kbButton, pad.button];
         for (var i = 0; i < icons.length; i++) {
             if (icons[i]) {
-                icons[i].style.display = visible ? "" : "none";
+                icons[i].style.display = visible ? "flex" : "none";
             }
         }
     }
