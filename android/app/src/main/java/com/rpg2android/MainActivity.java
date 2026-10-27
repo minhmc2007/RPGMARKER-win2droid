@@ -2,6 +2,9 @@ package com.rpg2android;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.Context;
+import android.content.pm.PackageInfo;
+import android.content.res.AssetManager;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.os.SystemClock;
@@ -19,6 +22,9 @@ import android.widget.FrameLayout;
 import android.widget.Toast;
 
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
@@ -33,6 +39,11 @@ import java.io.InputStream;
 public class MainActivity extends Activity {
     private static final String TAG = "RPG2Android";
     private static final String START_URL = "file:///android_asset/www/index.html";
+
+    /** Guards the one-shot media extraction below (the bridge thread calls it). */
+    private static final Object MEDIA_LOCK = new Object();
+    /** Longest movie the shell is willing to copy out of the APK. */
+    private static final long MAX_MEDIA_BYTES = 512L * 1024L * 1024L;
 
     private WebView webView;
     private long lastBackPress = 0L;
@@ -50,7 +61,7 @@ public class MainActivity extends Activity {
 
         webView = new WebView(this);
         webView.setBackgroundColor(Color.BLACK);
-        webView.addJavascriptInterface(new HostBridge(), "RPG2Host");
+        webView.addJavascriptInterface(new HostBridge(getApplicationContext()), "RPG2Host");
         webView.setLongClickable(false);
         webView.setHapticFeedbackEnabled(false);
         webView.setOnLongClickListener(new View.OnLongClickListener() {
@@ -152,6 +163,12 @@ public class MainActivity extends Activity {
 
     /** Receives the diagnostics that assets/rpg2android/host.js collects. */
     private static final class HostBridge {
+        private final Context context;
+
+        HostBridge(Context context) {
+            this.context = context;
+        }
+
         @JavascriptInterface
         public void log(String message) {
             if (message == null) {
@@ -159,6 +176,176 @@ public class MainActivity extends Activity {
             }
             String text = message.length() > 2000 ? message.substring(0, 2000) : message;
             Log.i("RPG2Android", text);
+        }
+
+        /**
+         * Copies a movie out of the APK into the app's own files directory and
+         * returns a file:// URL for it, or "" when that is not possible.
+         *
+         * Android's media stack opens media files itself and cannot read a path
+         * that only exists inside an APK: a &lt;video&gt; element pointed at
+         * file:///android_asset/www/movies/x.webm reports an error before its
+         * first frame. RPG Maker hands its media to the page as plain relative
+         * paths (movies/...), so the overlay asks for the file here instead and
+         * gets back a real path the media stack can open.
+         *
+         * @param path game relative path, e.g. "movies/feather.webm"
+         */
+        @JavascriptInterface
+        public String mediaFile(String path) {
+            String relative = MediaPath.normalize(path);
+            if (relative == null) {
+                return "";
+            }
+            synchronized (MEDIA_LOCK) {
+                try {
+                    File dir = new File(context.getFilesDir(), "media");
+                    prepareMediaDir(dir, buildStamp(context));
+                    File out = new File(dir, relative);
+                    if (!isUsableFile(out) && !extract(context.getAssets(), "www/" + relative, out)) {
+                        return "";
+                    }
+                    return "file://" + out.getAbsolutePath();
+                } catch (Exception e) {
+                    Log.w(TAG, "cannot provide media file for " + relative, e);
+                    return "";
+                }
+            }
+        }
+    }
+
+    private static boolean isUsableFile(File file) {
+        return file.isFile() && file.length() > 0;
+    }
+
+    /**
+     * Throws away copies made by an earlier version of the app: the movies come
+     * from the APK, so a new install may carry different ones.
+     */
+    private static void prepareMediaDir(File dir, String current) {
+        File stamp = new File(dir, ".version");
+        if (current.equals(readText(stamp))) {
+            return;
+        }
+        deleteRecursively(dir);
+        if (dir.mkdirs()) {
+            writeText(stamp, current);
+        }
+    }
+
+    private static String buildStamp(Context context) {
+        try {
+            PackageInfo info = context.getPackageManager()
+                    .getPackageInfo(context.getPackageName(), 0);
+            return info.lastUpdateTime + ":" + info.versionName;
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+
+    /**
+     * Copies one asset to a real file (via a .part file, so an interrupted copy
+     * is never mistaken for a finished one).
+     *
+     * @return true when the file exists afterwards, false when the asset is
+     *         missing or too large
+     */
+    private static boolean extract(AssetManager assets, String asset, File out) {
+        File parent = out.getParentFile();
+        if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
+            Log.w(TAG, "cannot create " + parent);
+            return false;
+        }
+        File partial = new File(out.getAbsolutePath() + ".part");
+        InputStream in = null;
+        FileOutputStream stream = null;
+        try {
+            in = assets.open(asset, AssetManager.ACCESS_STREAMING);
+            stream = new FileOutputStream(partial);
+            byte[] buffer = new byte[64 * 1024];
+            long total = 0;
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                total += read;
+                if (total > MAX_MEDIA_BYTES) {
+                    Log.w(TAG, "media file too large: " + asset);
+                    return false;
+                }
+                stream.write(buffer, 0, read);
+            }
+            closeQuietly(stream);
+            stream = null;
+            closeQuietly(in);
+            in = null;
+            if (out.exists() && !out.delete()) {
+                Log.w(TAG, "cannot replace " + out);
+            }
+            if (!partial.renameTo(out)) {
+                Log.w(TAG, "cannot move " + partial + " into place");
+                return false;
+            }
+            Log.i(TAG, "extracted " + asset + " (" + total + " bytes)");
+            return true;
+        } catch (IOException e) {
+            Log.w(TAG, "asset missing: " + asset);
+            return false;
+        } finally {
+            closeQuietly(stream);
+            closeQuietly(in);
+            if (partial.isFile() && !out.isFile()) {
+                partial.delete();
+            }
+        }
+    }
+
+    private static void closeQuietly(Closeable stream) {
+        if (stream == null) {
+            return;
+        }
+        try {
+            stream.close();
+        } catch (IOException e) {
+            // nothing useful to do while tearing a copy down
+        }
+    }
+
+    private static String readText(File file) {
+        if (!isUsableFile(file)) {
+            return "";
+        }
+        // java.nio.file needs API 26, this app supports 24.
+        try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buffer = new byte[512];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                out.write(buffer, 0, read);
+            }
+            return out.toString("UTF-8");
+        } catch (IOException e) {
+            return "";
+        }
+    }
+
+    private static void writeText(File file, String text) {
+        try (FileOutputStream stream = new FileOutputStream(file)) {
+            stream.write(text.getBytes());
+        } catch (IOException e) {
+            Log.w(TAG, "cannot write " + file, e);
+        }
+    }
+
+    private static void deleteRecursively(File file) {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursively(child);
+                }
+            }
+        }
+        if (file.exists() && !file.delete()) {
+            Log.w(TAG, "cannot delete " + file);
         }
     }
 

@@ -22,6 +22,10 @@
  *     reshaped and deleted, and the layout is stored in localStorage.
  *
  * All three only observe/inject input; the game logic itself is untouched.
+ *
+ * It also keeps movies playable: RPG Maker hands its <video> elements a path
+ * inside the APK, which Android's media stack cannot open, so the shell
+ * extracts the file on demand and the element is pointed at that copy.
  */
 (function () {
     "use strict";
@@ -162,6 +166,97 @@
         add("reject", describe(event && event.reason ? event.reason : event));
         showPanel(true);
     });
+
+    // ------------------------------------------------------------ game media
+    //
+    // Android's media stack opens media files itself, and a path that only
+    // exists inside the APK (file:///android_asset/www/movies/...) is not a file
+    // it can open: the element reports an error before its first frame. RPG
+    // Maker asks for movies as plain relative paths, so each one is extracted
+    // into the app's own files directory on demand (RPG2Host.mediaFile) and the
+    // element is pointed at that copy instead. When the copy cannot be made the
+    // game's own URL is left alone, and if the copy fails later the element falls
+    // back to the game's URL once.
+
+    var MEDIA_SRC = /^(?:\.\/)?(?:movies|videos)\/[^/]+\.(?:webm|mp4|m4v|ogv|ogg)$/i;
+    var media = { hooked: false, routed: 0, missing: 0, fallbacks: 0 };
+
+    function mediaFile(path) {
+        try {
+            if (window.RPG2Host && typeof window.RPG2Host.mediaFile === "function") {
+                return String(window.RPG2Host.mediaFile(path) || "");
+            }
+        } catch (e) {
+            add("warn", "media bridge failed: " + describe(e));
+        }
+        return "";
+    }
+
+    function installMediaHook() {
+        if (media.hooked || typeof HTMLMediaElement === "undefined") {
+            return;
+        }
+        var descriptor = Object.getOwnPropertyDescriptor(
+            HTMLMediaElement.prototype,
+            "src"
+        );
+        if (!descriptor || typeof descriptor.get !== "function" ||
+                typeof descriptor.set !== "function") {
+            return;
+        }
+        media.hooked = true;
+
+        // The element is only re-pointed at the game's own URL while it still
+        // holds the copy we handed it: anything else (the plugin clearing src
+        // while tearing the video down, RPG Maker swapping in a .mp4) is its
+        // business, and retrying on top of that would resurrect a dead video.
+        function retry(element) {
+            if (!element.__r2aAsset || element.__r2aRetried ||
+                    descriptor.get.call(element) !== element.__r2aUrl) {
+                return;
+            }
+            element.__r2aRetried = true;
+            media.fallbacks++;
+            add("warn", "movie " + element.__r2aAsset + " will not play from app storage; using the game's own URL");
+            descriptor.set.call(element, element.__r2aAsset);
+        }
+
+        Object.defineProperty(HTMLMediaElement.prototype, "src", {
+            configurable: true,
+            enumerable: descriptor.enumerable,
+            get: function () {
+                return descriptor.get.call(this);
+            },
+            set: function (value) {
+                var path = typeof value === "string" && MEDIA_SRC.test(value) ? value : "";
+                var file = path ? mediaFile(path) : "";
+                if (!file) {
+                    if (path) {
+                        media.missing++;
+                    }
+                    descriptor.set.call(this, value);
+                    return;
+                }
+                var element = this;
+                element.__r2aAsset = path;
+                element.__r2aUrl = file;
+                element.__r2aRetried = false;
+                if (!element.__r2aErrorHook) {
+                    element.__r2aErrorHook = true;
+                    element.addEventListener("error", function () {
+                        retry(element);
+                    });
+                }
+                if (media.routed === 0) {
+                    add("info", "movie " + path + " plays from app storage");
+                }
+                media.routed++;
+                descriptor.set.call(this, file);
+            }
+        });
+    }
+
+    installMediaHook();
 
     // ---------------------------------------------------------------- probing
 
@@ -421,8 +516,17 @@
         var parts = [];
         for (var i = 0; i < Math.min(videos.length, 3); i++) {
             var v = videos[i];
+            var source = "game";
+            if (v.__r2aAsset) {
+                if (v.__r2aRetried) {
+                    source = "game-after-copy";
+                } else if (v.currentSrc === v.__r2aUrl || v.src === v.__r2aUrl) {
+                    source = "app-storage";
+                }
+            }
             parts.push(
                 (v.currentSrc || v.src || "?").split("/").pop() +
+                " " + source +
                 " dur=" + (isFinite(v.duration) ? Math.round(v.duration) : "?") +
                 " rs=" + v.readyState +
                 " paused=" + (v.paused ? 1 : 0) +

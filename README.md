@@ -88,6 +88,10 @@ editor and the v2 signer are plain standard library code.
 * DOM storage + database enabled, so **saves work** (RPG Maker stores them in
   `localStorage`, which lives inside the app and is wiped if you uninstall).
 * `file://` XHR allowed, media autoplay allowed (needed for audio/BGM).
+* Movies play: Android's media stack cannot open a path that only exists inside
+  the APK, so `movies/*` is extracted into the app's own files directory the
+  first time a `<video>` asks for it and the element is pointed at that copy
+  (see *Movies* below).
 * The WebView is given window focus explicitly, and the injected host script
   keeps RPG Maker updating whenever the page is visible. MZ otherwise skips
   scene updates unless `window.top.document.hasFocus()` is true, which is
@@ -97,6 +101,30 @@ editor and the v2 signer are plain standard library code.
   diagnostics panel if one is open, otherwise sends <kbd>Esc</kbd>
   (cancel/menu); press twice to exit.
 * Game audio/timers pause when the app goes to the background.
+
+### Movies
+
+RPG Maker hands its `<video>` elements a path relative to the game root
+(`movies/title.webm`), which resolves to `file:///android_asset/www/movies/...`.
+The page can read that path, but the media stack that actually decodes the file
+opens it by name and cannot look inside an APK, so such an element reports an
+error before its first frame and the movie never appears.
+
+So the shell extracts the file instead:
+
+* `RPG2Host.mediaFile(path)` copies `assets/www/movies/<name>` into
+  `filesDir/media/movies/<name>` (once per movie, per app version) and returns a
+  `file://` URL for it. `MediaPath` decides which paths may trigger a copy: only
+  plain `movies/` or `videos/` files with a media extension, no traversal.
+* The overlay wraps `HTMLMediaElement.prototype.src` and swaps the game's
+  relative path for that URL; both RPG Maker's *Play Movie* command and plugins
+  that build `<video>` themselves (e.g. animated title screens) go through it.
+* If a copy cannot be made the game's own URL is kept, and if the copy fails
+  later the element falls back to it once — so nothing that used to work breaks.
+
+The diagnostics panel reports which route an element ended up on:
+`video feather.webm app-storage ...` (playing the extracted copy) or
+`game-after-copy` (the copy failed, the game's own URL is in use).
 
 ## Shell overlay: diagnostics, virtual keyboard, on-screen buttons
 
@@ -153,7 +181,8 @@ tap twice to lock them (shown with an amber outline).
 android/                 Java WebView app + Gradle project (built only in CI)
   app/src/main/java/com/rpg2android/MainActivity.java
   app/src/main/assets/www/index.html   placeholder, replaced at inject time
-  app/src/main/assets/rpg2android/host.js   shell overlay: diagnostics + keyboard + buttons
+  app/src/main/java/com/rpg2android/MediaPath.java   movie path rules (unit tested)
+  app/src/main/assets/rpg2android/host.js   shell overlay: diagnostics + keyboard + buttons + media
 build_apk.py             CLI: inject a game into the template and sign it
 tools/identity.py        game root detection, name + package id
 tools/axml.py            binary AndroidManifest.xml reader/writer
