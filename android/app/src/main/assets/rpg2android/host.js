@@ -6,7 +6,7 @@
  * committed. No game file is ever modified, and the same overlay ships with
  * every game built from the template.
  *
- * Two pieces of UI, both floating above the canvas:
+ * Three pieces of UI, all floating above the canvas:
  *
  *   - the diagnostics panel: tap the small "i" in the top-right corner, or it
  *     opens by itself after a JS error / a canvas that only paints black. It
@@ -16,8 +16,12 @@
  *     translucent US laptop layout (Esc, F1-F12, Ctrl/Alt/Shift/Caps, arrows)
  *     that types into the game, including any focused text field. ✕ closes it,
  *     and the hardware back button closes it too.
+ *   - the on-screen pad (keymapper): floating game buttons that send a key to
+ *     the game while held. Tap the gamepad button to show/hide them; hold it
+ *     to open the editor, where buttons are added, moved, resized, relabelled,
+ *     reshaped and deleted, and the layout is stored in localStorage.
  *
- * Both only observe/inject input; the game logic itself is untouched.
+ * All three only observe/inject input; the game logic itself is untouched.
  */
 (function () {
     "use strict";
@@ -524,6 +528,17 @@
         return "errors " + (errors.length ? "\n             " + tail : "none");
     }
 
+    function padInfo() {
+        var count = pad.items ? pad.items.length : 0;
+        var selected = pad.selectedId ? findPadItem(pad.selectedId) : null;
+        return (
+            "pad buttons=" + count +
+            " visible=" + (pad.visible ? 1 : 0) +
+            " editing=" + (pad.editing ? 1 : 0) +
+            " selected=" + (selected ? selected.label + "/" + selected.kc : "-")
+        );
+    }
+
     function report() {
         return [
             "url " + String(location.href).split("/").slice(-2).join("/"),
@@ -537,6 +552,7 @@
             sceneInfo(),
             mediaInfo(),
             audioInfo(),
+            padInfo(),
             errorInfo(),
             "trace",
             "    " + (traceLines.slice(-10).join("\n    ") || "(empty)"),
@@ -1200,6 +1216,1065 @@
         }
     }
 
+    // ------------------------------------------------------------- on-screen pad
+
+    var PAD_STORE = "r2a.controls.v1";
+
+    var PAD_ICON =
+        "<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='#9ef' " +
+        "stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'>" +
+        "<path d='M7 8.5h10a4 4 0 0 1 3.9 3.1l.8 3.9a2.3 2.3 0 0 1-4.1 1.8L16 15.5H8l-1.6 1.8a2.3 2.3 0 0 1-4.1-1.8l.8-3.9A4 4 0 0 1 7 8.5z'></path>" +
+        "<path d='M8.6 11.4v2M7.6 12.4h2'></path>" +
+        "<circle cx='15.6' cy='11.6' r='.85' fill='#9ef' stroke='none'></circle>" +
+        "<circle cx='17.2' cy='13.4' r='.85' fill='#9ef' stroke='none'></circle></svg>";
+
+    var PAD_BASE_STYLE = [
+        "position:absolute", "transform:translate(-50%,-50%)", "box-sizing:border-box",
+        "display:flex", "align-items:center", "justify-content:center", "pointer-events:auto",
+        "color:#eaf7ff", "font-family:Roboto,'Segoe UI',system-ui,sans-serif",
+        "font-weight:700", "letter-spacing:0.5px", "text-shadow:0 1px 2px rgba(0,0,0,0.65)",
+        "white-space:nowrap", "overflow:hidden", "touch-action:none",
+        "-webkit-user-select:none", "user-select:none", "-webkit-tap-highlight-color:transparent",
+        "background:linear-gradient(180deg,rgba(150,205,255,0.42),rgba(60,110,190,0.34))",
+        "border:1.5px solid rgba(215,240,255,0.6)",
+        "box-shadow:inset 0 1px 0 rgba(255,255,255,0.26),0 3px 10px rgba(0,0,0,0.35)",
+        "-webkit-backdrop-filter:blur(2px)", "backdrop-filter:blur(2px)"
+    ].join(";");
+
+    var PAD_PRESSED_STYLE =
+        ";background:linear-gradient(180deg,rgba(165,240,255,0.88),rgba(70,170,255,0.66));" +
+        "color:#04121e;text-shadow:none;border-color:rgba(232,252,255,0.95)";
+
+    var PAD_SELECTED_STYLE =
+        ";outline:2px dashed rgba(120,235,255,0.95);outline-offset:2px";
+
+    var PAD_GRIP_STYLE = [
+        "position:absolute", "right:-9px", "bottom:-9px", "width:20px", "height:20px",
+        "border-radius:50%", "background:rgba(130,235,255,0.95)",
+        "border:1.5px solid #04202c", "box-shadow:0 1px 5px rgba(0,0,0,0.55)",
+        "display:none", "box-sizing:border-box", "touch-action:none"
+    ].join(";");
+
+    var pad = {
+        items: null,
+        visible: true,
+        editing: false,
+        selectedId: null,
+        root: null,
+        backdrop: null,
+        bar: null,
+        panel: null,
+        panelBody: null,
+        panelTitle: null,
+        button: null,
+        els: {},
+        drag: null,
+        presses: {},
+        sizeSlider: null,
+        seq: 1
+    };
+
+    function padViewport() {
+        var doc = document.documentElement;
+        var w = window.innerWidth || (doc && doc.clientWidth) || 0;
+        var h = window.innerHeight || (doc && doc.clientHeight) || 0;
+        return { w: w > 0 ? w : 1, h: h > 0 ? h : 1 };
+    }
+
+    function clamp(value, low, high) {
+        return value < low ? low : value > high ? high : value;
+    }
+
+    function findPadItem(id) {
+        if (!pad.items) {
+            return null;
+        }
+        for (var i = 0; i < pad.items.length; i++) {
+            if (pad.items[i].id === id) {
+                return pad.items[i];
+            }
+        }
+        return null;
+    }
+
+    function padKeys() {
+        var rows = [
+            ["Esc", 27, "Escape", "Escape"],
+            ["Tab", 9, "Tab", "Tab"],
+            ["Enter", 13, "Enter", "Enter"],
+            ["Space", 32, "Space", " "],
+            ["Backspace", 8, "Backspace", "Backspace"],
+            ["Delete", 46, "Delete", "Delete"],
+            ["Shift", 16, "ShiftLeft", "Shift"],
+            ["Ctrl", 17, "ControlLeft", "Control"],
+            ["Alt", 18, "AltLeft", "Alt"],
+            ["Up", 38, "ArrowUp", "ArrowUp"],
+            ["Down", 40, "ArrowDown", "ArrowDown"],
+            ["Left", 37, "ArrowLeft", "ArrowLeft"],
+            ["Right", 39, "ArrowRight", "ArrowRight"]
+        ];
+        var keys = [];
+        var i;
+        for (i = 0; i < rows.length; i++) {
+            keys.push({ l: rows[i][0], kc: rows[i][1], c: rows[i][2], k: rows[i][3] });
+        }
+        for (i = 65; i <= 90; i++) {
+            var letter = String.fromCharCode(i);
+            keys.push({ l: letter, kc: i, c: "Key" + letter, k: letter.toLowerCase() });
+        }
+        for (i = 48; i <= 57; i++) {
+            keys.push({ l: String(i), kc: i, c: "Digit" + i, k: String(i) });
+        }
+        for (i = 1; i <= 12; i++) {
+            keys.push({ l: "F" + i, kc: 111 + i, c: "F" + i, k: "F" + i });
+        }
+        return keys;
+    }
+
+    function padSpec(item) {
+        var spec = { kc: item.kc, c: item.code, k: item.key, l: item.label };
+        if (typeof item.key === "string" && item.key.length === 1) {
+            spec.t = item.key;
+            spec.st = item.key.toUpperCase();
+        }
+        return spec;
+    }
+
+    // ------------------------------------------------------- pad: persistence
+
+    function savePad() {
+        try {
+            localStorage.setItem(PAD_STORE, JSON.stringify({
+                visible: pad.visible,
+                items: pad.items || []
+            }));
+        } catch (e) {
+            add("warn", "cannot save the on-screen buttons: " + describe(e));
+        }
+    }
+
+    function sanitizePadItem(raw) {
+        if (!raw || typeof raw !== "object") {
+            return null;
+        }
+        var kc = parseInt(raw.kc, 10);
+        if (!isFinite(kc)) {
+            return null;
+        }
+        var item = {
+            id: "b" + pad.seq++,
+            label: typeof raw.label === "string" && raw.label.length ? raw.label.slice(0, 8) : "?",
+            kc: kc,
+            code: typeof raw.code === "string" ? raw.code : "",
+            key: typeof raw.key === "string" ? raw.key : "",
+            x: clamp(parseFloat(raw.x) || 0.5, 0, 1),
+            y: clamp(parseFloat(raw.y) || 0.5, 0, 1),
+            w: clamp(parseFloat(raw.w) || 0.1, 0.01, 1),
+            h: clamp(parseFloat(raw.h) || 0.1, 0.01, 1),
+            shape: raw.shape === "round" || raw.shape === "square" || raw.shape === "pill"
+                ? raw.shape : "circle",
+            op: clamp(parseFloat(raw.op) || 0.62, 0.1, 1)
+        };
+        return item;
+    }
+
+    function loadPad() {
+        try {
+            var raw = localStorage.getItem(PAD_STORE);
+            if (!raw) {
+                return null;
+            }
+            var data = JSON.parse(raw);
+            if (!data || !data.items || !data.items.length) {
+                return null;
+            }
+            var items = [];
+            for (var i = 0; i < data.items.length; i++) {
+                var item = sanitizePadItem(data.items[i]);
+                if (item) {
+                    items.push(item);
+                }
+            }
+            if (!items.length) {
+                return null;
+            }
+            pad.visible = data.visible !== false;
+            return items;
+        } catch (e) {
+            add("warn", "cannot read the on-screen buttons: " + describe(e));
+            return null;
+        }
+    }
+
+    function padDefaultLayout() {
+        var v = padViewport();
+        var s = Math.min(v.w, v.h);
+        var size = Math.max(44, Math.round(s * 0.16));
+        var margin = Math.round(s * 0.05);
+        var cx = margin + size * 1.45;
+        var cy = v.h - margin - size * 1.45;
+        var items = [];
+
+        function push(label, kc, code, key, px, py) {
+            items.push({
+                id: "b" + pad.seq++,
+                label: label, kc: kc, code: code, key: key,
+                x: px / v.w, y: py / v.h,
+                w: size / v.w, h: size / v.h,
+                shape: "circle", op: 0.62
+            });
+        }
+
+        push("\u25B2", 38, "ArrowUp", "ArrowUp", cx, cy - size * 0.98);
+        push("\u25C0", 37, "ArrowLeft", "ArrowLeft", cx - size * 0.98, cy);
+        push("\u25B6", 39, "ArrowRight", "ArrowRight", cx + size * 0.98, cy);
+        push("\u25BC", 40, "ArrowDown", "ArrowDown", cx, cy + size * 0.98);
+        push("OK", 90, "KeyZ", "z", v.w - margin - size * 0.95, v.h - margin - size * 1.45);
+        push("X", 88, "KeyX", "x", v.w - margin - size * 2.05, v.h - margin - size * 0.5);
+        return items;
+    }
+
+    // ------------------------------------------------------------ pad: render
+
+    function padRadius(item) {
+        if (item.shape === "circle") {
+            return "50%";
+        }
+        if (item.shape === "square") {
+            return "7%";
+        }
+        if (item.shape === "pill") {
+            return "999px";
+        }
+        return "22%";
+    }
+
+    function placePadButton(item, el) {
+        if (!el) {
+            return;
+        }
+        var v = padViewport();
+        var px = Math.min(item.w * v.w, item.h * v.h);
+        el.style.left = (item.x * 100).toFixed(3) + "%";
+        el.style.top = (item.y * 100).toFixed(3) + "%";
+        el.style.width = (item.w * 100).toFixed(3) + "%";
+        el.style.height = (item.h * 100).toFixed(3) + "%";
+        el.style.borderRadius = padRadius(item);
+        el.style.fontSize = Math.max(9, Math.round(px * 0.3)) + "px";
+        el.style.opacity = String(pad.editing ? Math.max(item.op, 0.9) : item.op);
+        if (el.__r2aLabel) {
+            el.__r2aLabel.textContent = item.label;
+        }
+        if (el.__r2aGrip) {
+            el.__r2aGrip.style.display =
+                pad.editing && pad.selectedId === item.id ? "block" : "none";
+        }
+    }
+
+    function paintPad(item, el, pressed) {
+        if (!el) {
+            return;
+        }
+        var style = el.__r2aBase;
+        if (pressed) {
+            style += PAD_PRESSED_STYLE;
+        }
+        if (pad.editing && pad.selectedId === item.id) {
+            style += PAD_SELECTED_STYLE;
+        }
+        el.setAttribute("style", style);
+        placePadButton(item, el);
+    }
+
+    function selectPadItem(id) {
+        pad.selectedId = id;
+        for (var i = 0; i < pad.items.length; i++) {
+            var item = pad.items[i];
+            paintPad(item, pad.els[item.id], false);
+        }
+        renderInspector();
+    }
+
+    function startPadPress(item, el, event) {
+        var spec = padSpec(item);
+        var target = focusedEditor() || document;
+        var entry = {
+            el: el, item: item, target: target, spec: spec,
+            up: keyEvent("keyup", spec), at: Date.now()
+        };
+        try {
+            target.dispatchEvent(keyEvent("keydown", spec));
+        } catch (e) {
+            /* ignore */
+        }
+        paintPad(item, el, true);
+        pad.presses[event.pointerId] = entry;
+        try {
+            el.setPointerCapture(event.pointerId);
+        } catch (e) {
+            /* older WebView */
+        }
+    }
+
+    function endPadPress(event) {
+        var entry = pad.presses[event.pointerId];
+        if (!entry) {
+            return false;
+        }
+        delete pad.presses[event.pointerId];
+        paintPad(entry.item, entry.el, false);
+        // RPG Maker samples the input once per frame, so a quick tap has to
+        // stay down long enough for Input.update() to see it.
+        var delay = Math.max(0, 90 - (Date.now() - entry.at));
+        setTimeout(function () {
+            try {
+                entry.target.dispatchEvent(entry.up);
+            } catch (e) {
+                /* ignore */
+            }
+        }, delay);
+        return true;
+    }
+
+    function padDragMove(event) {
+        var drag = pad.drag;
+        if (!drag) {
+            return;
+        }
+        var item = drag.item;
+        var v = padViewport();
+        var dx = event.clientX - drag.sx;
+        var dy = event.clientY - drag.sy;
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+            drag.moved = true;
+        }
+        if (drag.kind === "move") {
+            item.x = clamp(drag.x + dx / v.w, 0.02, 0.98);
+            item.y = clamp(drag.y + dy / v.h, 0.02, 0.98);
+        } else {
+            // The button is centred, so the corner handle moves both edges.
+            item.w = clamp(drag.w + (dx * 2) / v.w, 34 / v.w, 0.9);
+            item.h = clamp(drag.h + (dy * 2) / v.h, 34 / v.h, 0.9);
+            if (item.shape === "circle") {
+                var size = Math.max(item.w * v.w, item.h * v.h);
+                item.w = size / v.w;
+                item.h = size / v.h;
+            }
+        }
+        paintPad(item, pad.els[item.id], false);
+        syncSizeSlider(item);
+    }
+
+    function endPadDrag(event) {
+        var drag = pad.drag;
+        if (!drag || (event && drag.pointerId !== event.pointerId)) {
+            return;
+        }
+        pad.drag = null;
+        if (drag.moved) {
+            savePad();
+        }
+    }
+
+    function buildPadButton(item) {
+        var el = document.createElement("div");
+        el.className = "r2aPadButton";
+        el.setAttribute("data-r2a-id", item.id);
+        el.__r2aBase = PAD_BASE_STYLE;
+        el.setAttribute("style", el.__r2aBase);
+
+        var label = document.createElement("span");
+        label.setAttribute("style", "pointer-events:none");
+        el.__r2aLabel = label;
+        el.appendChild(label);
+
+        var grip = document.createElement("div");
+        grip.setAttribute("style", PAD_GRIP_STYLE);
+        el.__r2aGrip = grip;
+        el.appendChild(grip);
+
+        grip.addEventListener("pointerdown", function (event) {
+            if (!pad.editing) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            pad.drag = {
+                kind: "resize", id: item.id, item: item, el: el,
+                sx: event.clientX, sy: event.clientY,
+                x: item.x, y: item.y, w: item.w, h: item.h,
+                pointerId: event.pointerId, moved: false
+            };
+            try {
+                el.setPointerCapture(event.pointerId);
+            } catch (e) {
+                /* older WebView */
+            }
+        });
+
+        el.addEventListener("pointerdown", function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!pad.editing) {
+                startPadPress(item, el, event);
+                return;
+            }
+            selectPadItem(item.id);
+            pad.drag = {
+                kind: "move", id: item.id, item: item, el: el,
+                sx: event.clientX, sy: event.clientY,
+                x: item.x, y: item.y, w: item.w, h: item.h,
+                pointerId: event.pointerId, moved: false
+            };
+            try {
+                el.setPointerCapture(event.pointerId);
+            } catch (e) {
+                /* older WebView */
+            }
+        });
+
+        el.addEventListener("pointermove", function (event) {
+            if (!pad.drag || pad.drag.pointerId !== event.pointerId) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            padDragMove(event);
+        });
+
+        var finish = function (event) {
+            if (!pad.editing) {
+                if (endPadPress(event)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
+                return;
+            }
+            endPadDrag(event);
+        };
+        el.addEventListener("pointerup", finish);
+        el.addEventListener("pointercancel", finish);
+        el.addEventListener("contextmenu", function (event) {
+            event.preventDefault();
+        });
+        return el;
+    }
+
+    function renderPad() {
+        ensurePad();
+        if (!pad.root || !pad.items) {
+            return;
+        }
+        renderPadNow();
+    }
+
+    function renderPadNow() {
+        while (pad.root.firstChild) {
+            pad.root.removeChild(pad.root.firstChild);
+        }
+        pad.els = {};
+        for (var i = 0; i < pad.items.length; i++) {
+            var item = pad.items[i];
+            var el = buildPadButton(item);
+            pad.els[item.id] = el;
+            pad.root.appendChild(el);
+            paintPad(item, el, false);
+        }
+        pad.root.style.display = pad.visible ? "block" : "none";
+        if (pad.button) {
+            paintPadButtonState();
+        }
+    }
+
+    function ensurePad() {
+        if (pad.root || !document.body) {
+            return;
+        }
+        var root = document.createElement("div");
+        root.id = "r2aPad";
+        root.setAttribute("style", [
+            "position:fixed", "left:0", "top:0", "right:0", "bottom:0",
+            "z-index:2147483643", "pointer-events:none"
+        ].join(";"));
+        // The game must never see a tap that belongs to an on-screen button.
+        var swallow = function (event) {
+            event.stopPropagation();
+        };
+        root.addEventListener("touchstart", swallow, { passive: true });
+        root.addEventListener("touchmove", swallow, { passive: true });
+        root.addEventListener("touchend", swallow, { passive: true });
+        root.addEventListener("mousedown", swallow);
+        document.body.appendChild(root);
+        pad.root = root;
+
+        if (!pad.items) {
+            pad.items = loadPad();
+            if (!pad.items) {
+                pad.items = padDefaultLayout();
+                savePad();
+            }
+        }
+        renderPadNow();
+    }
+
+    // ------------------------------------------------------------ pad: editor
+
+    function chromeButton(text, onClick, accent) {
+        var el = document.createElement("div");
+        el.textContent = text;
+        el.setAttribute("style", [
+            "height:28px", "padding:0 11px", "display:flex", "align-items:center",
+            "border-radius:6px", "box-sizing:border-box",
+            "font:600 11px/26px Roboto,system-ui,sans-serif", "letter-spacing:0.5px",
+            "color:" + (accent ? "#04121e" : "#dff6ff"),
+            "background:" + (accent ? "rgba(130,225,255,0.92)" : "rgba(120,200,255,0.16)"),
+            "border:1px solid rgba(170,230,255,0.6)",
+            "-webkit-user-select:none", "user-select:none", "touch-action:none"
+        ].join(";"));
+        el.addEventListener("pointerdown", function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClick(event);
+        });
+        return el;
+    }
+
+    function ensureMapperChrome() {
+        if (!document.body) {
+            return;
+        }
+        if (!pad.backdrop) {
+            var backdrop = document.createElement("div");
+            backdrop.id = "r2aPadBackdrop";
+            backdrop.setAttribute("style", [
+                "position:fixed", "left:0", "top:0", "right:0", "bottom:0",
+                "z-index:2147483642", "display:none",
+                "background-color:rgba(6,12,22,0.55)",
+                "background-image:linear-gradient(rgba(120,200,255,0.16) 1px,transparent 1px)," +
+                    "linear-gradient(90deg,rgba(120,200,255,0.16) 1px,transparent 1px)",
+                "background-size:32px 32px,32px 32px",
+                "touch-action:none"
+            ].join(";"));
+            backdrop.addEventListener("pointerdown", function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                selectPadItem(null);
+            });
+            backdrop.addEventListener("touchstart", function (event) {
+                event.stopPropagation();
+            }, { passive: true });
+            document.body.appendChild(backdrop);
+            pad.backdrop = backdrop;
+        }
+
+        if (!pad.bar) {
+            var bar = document.createElement("div");
+            bar.id = "r2aPadBar";
+            bar.setAttribute("style", [
+                "position:fixed", "left:0", "right:0", "top:0", "height:46px",
+                "display:none", "align-items:center", "justify-content:space-between",
+                "gap:8px", "padding:0 8px", "box-sizing:border-box",
+                "background:rgba(8,14,26,0.95)",
+                "border-bottom:1px solid rgba(120,215,255,0.45)",
+                "box-shadow:0 4px 14px rgba(0,0,0,0.5)",
+                "z-index:2147483646", "font-family:Roboto,system-ui,sans-serif",
+                "color:#dff6ff", "touch-action:none"
+            ].join(";"));
+            bar.addEventListener("pointerdown", function (event) {
+                event.stopPropagation();
+            });
+            bar.addEventListener("touchstart", function (event) {
+                event.stopPropagation();
+            }, { passive: true });
+
+            var titles = document.createElement("div");
+            titles.setAttribute("style", "display:flex;flex-direction:column;min-width:0");
+            var heading = document.createElement("span");
+            heading.textContent = "ON-SCREEN BUTTONS";
+            heading.setAttribute("style", "font:700 11px/1.2 Roboto,system-ui,sans-serif;letter-spacing:1px");
+            var hint = document.createElement("span");
+            hint.id = "r2aPadHint";
+            hint.textContent = "drag to move \u00b7 corner to resize \u00b7 tap to edit";
+            hint.setAttribute("style", "font:9px/1.2 Roboto,system-ui,sans-serif;color:rgba(180,215,245,0.7);white-space:nowrap;overflow:hidden;text-overflow:ellipsis");
+            titles.appendChild(heading);
+            titles.appendChild(hint);
+
+            var actions = document.createElement("div");
+            actions.setAttribute("style", "display:flex;align-items:center;gap:6px;flex:0 0 auto");
+            actions.appendChild(chromeButton("+ ADD", function () {
+                addPadItem();
+            }));
+            actions.appendChild(chromeButton("DONE", function () {
+                closeMapper();
+            }, true));
+
+            bar.appendChild(titles);
+            bar.appendChild(actions);
+            document.body.appendChild(bar);
+            pad.bar = bar;
+        }
+
+        if (!pad.panel) {
+            var panel = document.createElement("div");
+            panel.id = "r2aPadPanel";
+            panel.setAttribute("style", [
+                "position:fixed", "left:0", "right:0", "bottom:0", "max-height:52vh",
+                "display:none", "box-sizing:border-box", "padding:0 10px 12px",
+                "overflow:auto", "background:rgba(8,14,26,0.96)",
+                "border-top:1px solid rgba(120,215,255,0.45)",
+                "box-shadow:0 -6px 20px rgba(0,0,0,0.55)",
+                "z-index:2147483646", "font-family:Roboto,system-ui,sans-serif",
+                "color:#dff6ff"
+            ].join(";"));
+            panel.addEventListener("pointerdown", function (event) {
+                event.stopPropagation();
+            });
+            panel.addEventListener("touchstart", function (event) {
+                event.stopPropagation();
+            }, { passive: true });
+
+            var head = document.createElement("div");
+            head.setAttribute("style", [
+                "position:sticky", "top:0", "display:flex", "align-items:center",
+                "justify-content:space-between", "margin:0 -10px 8px", "padding:6px 10px",
+                "background:rgba(8,14,26,0.98)",
+                "border-bottom:1px solid rgba(120,215,255,0.25)"
+            ].join(";"));
+            var panelTitle = document.createElement("span");
+            panelTitle.textContent = "BUTTON";
+            panelTitle.setAttribute("style", "font:700 10px/1.2 Roboto,system-ui,sans-serif;letter-spacing:1px;color:rgba(200,235,255,0.9)");
+            pad.panelTitle = panelTitle;
+            var collapse = chromeButton("\u2715", function () {
+                selectPadItem(null);
+            });
+            collapse.id = "r2aPadPanelClose";
+            collapse.setAttribute("style", collapse.getAttribute("style") + ";padding:0 9px");
+            head.appendChild(panelTitle);
+            head.appendChild(collapse);
+
+            var body = document.createElement("div");
+            pad.panelBody = body;
+
+            panel.appendChild(head);
+            panel.appendChild(body);
+            document.body.appendChild(panel);
+            pad.panel = panel;
+        }
+    }
+
+    function panelRow(labelText, control) {
+        var row = document.createElement("div");
+        row.setAttribute("style", "display:flex;align-items:center;gap:8px;margin:0 0 9px");
+        var label = document.createElement("div");
+        label.textContent = labelText;
+        label.setAttribute("style", [
+            "flex:0 0 58px", "font:600 9px/1.2 Roboto,system-ui,sans-serif",
+            "letter-spacing:0.7px", "text-transform:uppercase",
+            "color:rgba(180,220,250,0.75)"
+        ].join(";"));
+        row.appendChild(label);
+        row.appendChild(control);
+        return row;
+    }
+
+    function fieldStyle() {
+        return [
+            "flex:1 1 auto", "min-width:0", "height:30px", "box-sizing:border-box",
+            "padding:0 8px", "border-radius:6px",
+            "border:1px solid rgba(170,230,255,0.45)",
+            "background:rgba(255,255,255,0.09)", "color:#eaf7ff",
+            "font:600 13px/28px Roboto,system-ui,sans-serif"
+        ].join(";");
+    }
+
+    function chipStyle(active) {
+        return [
+            "flex:1 1 0", "height:30px", "display:flex", "align-items:center",
+            "justify-content:center", "border-radius:6px", "box-sizing:border-box",
+            "font:600 9.5px/1 Roboto,system-ui,sans-serif", "letter-spacing:0.5px",
+            "color:" + (active ? "#04121e" : "#dff6ff"),
+            "background:" + (active ? "rgba(130,225,255,0.92)" : "rgba(255,255,255,0.07)"),
+            "border:1px solid " + (active ? "rgba(220,250,255,0.95)" : "rgba(170,230,255,0.4)"),
+            "-webkit-user-select:none", "user-select:none"
+        ].join(";");
+    }
+
+    function syncSizeSlider(item) {
+        if (!pad.sizeSlider || !item) {
+            return;
+        }
+        var v = padViewport();
+        pad.sizeSlider.__r2aValue.textContent = Math.round(item.w * v.w) + "px";
+    }
+
+    function renderInspector() {
+        ensureMapperChrome();
+        if (!pad.panel) {
+            return;
+        }
+        var item = pad.selectedId ? findPadItem(pad.selectedId) : null;
+        pad.panelBody.textContent = "";
+        pad.sizeSlider = null;
+        if (!item) {
+            pad.panel.style.display = "none";
+            return;
+        }
+        pad.panel.style.display = "block";
+        pad.panelTitle.textContent = "BUTTON \u00b7 " + item.label;
+
+        var labelInput = document.createElement("input");
+        labelInput.id = "r2aPadLabel";
+        labelInput.type = "text";
+        labelInput.maxLength = 8;
+        labelInput.value = item.label;
+        labelInput.setAttribute("style", fieldStyle());
+        labelInput.addEventListener("input", function () {
+            item.label = (labelInput.value || "?").slice(0, 8);
+            placePadButton(item, pad.els[item.id]);
+            pad.panelTitle.textContent = "BUTTON \u00b7 " + item.label;
+            savePad();
+        });
+        pad.panelBody.appendChild(panelRow("Label", labelInput));
+
+        var keySelect = document.createElement("select");
+        keySelect.id = "r2aPadKey";
+        keySelect.setAttribute("style", fieldStyle() + ";padding:0 4px");
+        var keys = padKeys();
+        for (var i = 0; i < keys.length; i++) {
+            var option = document.createElement("option");
+            option.value = String(keys[i].kc);
+            option.textContent = keys[i].l;
+            keySelect.appendChild(option);
+        }
+        keySelect.value = String(item.kc);
+        keySelect.addEventListener("change", function () {
+            var table = padKeys();
+            for (var k = 0; k < table.length; k++) {
+                if (String(table[k].kc) === keySelect.value) {
+                    item.kc = table[k].kc;
+                    item.code = table[k].c;
+                    item.key = table[k].k;
+                    break;
+                }
+            }
+            savePad();
+        });
+        pad.panelBody.appendChild(panelRow("Key", keySelect));
+
+        var bolts = document.createElement("div");
+        bolts.setAttribute("style", "display:flex;gap:6px;flex:1 1 auto");
+        var shapes = [
+            { id: "circle", label: "CIRCLE" },
+            { id: "round", label: "ROUND" },
+            { id: "square", label: "SQUARE" },
+            { id: "pill", label: "PILL" }
+        ];
+        for (var s = 0; s < shapes.length; s++) {
+            (function (shape) {
+                var chip = document.createElement("div");
+                chip.setAttribute("data-r2a-shape", shape.id);
+                chip.textContent = shape.label;
+                chip.setAttribute("style", chipStyle(item.shape === shape.id));
+                chip.addEventListener("pointerdown", function (event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    item.shape = shape.id;
+                    if (shape.id === "circle") {
+                        var v = padViewport();
+                        var size = Math.max(item.w * v.w, item.h * v.h);
+                        item.w = size / v.w;
+                        item.h = size / v.h;
+                    }
+                    for (var c = 0; c < bolts.children.length; c++) {
+                        var other = bolts.children[c];
+                        other.setAttribute("style",
+                            chipStyle(other.getAttribute("data-r2a-shape") === item.shape));
+                    }
+                    paintPad(item, pad.els[item.id], false);
+                    savePad();
+                });
+                bolts.appendChild(chip);
+            })(shapes[s]);
+        }
+        pad.panelBody.appendChild(panelRow("Shape", bolts));
+
+        var size = document.createElement("input");
+        size.id = "r2aPadSize";
+        size.type = "range";
+        size.min = "28";
+        size.max = "300";
+        size.step = "2";
+        var viewport = padViewport();
+        var sizeValue = document.createElement("span");
+        sizeValue.setAttribute("style", "flex:0 0 42px;text-align:right;font:600 11px/1 Roboto,system-ui,sans-serif;color:rgba(190,225,255,0.85)");
+        size.setAttribute("style", "flex:1 1 auto;min-width:0;accent-color:#7fdcff");
+        size.value = String(Math.round(item.w * viewport.w));
+        sizeValue.textContent = Math.round(item.w * viewport.w) + "px";
+        size.__r2aValue = sizeValue;
+        size.addEventListener("input", function () {
+            var v = padViewport();
+            var target = Math.max(28, parseInt(size.value, 10) || 28);
+            var factor = target / Math.max(1, item.w * v.w);
+            item.w = clamp(item.w * factor, 28 / v.w, 0.9);
+            item.h = clamp(item.h * factor, 28 / v.h, 0.9);
+            placePadButton(item, pad.els[item.id]);
+            sizeValue.textContent = target + "px";
+            savePad();
+        });
+        pad.sizeSlider = size;
+        var sizeWrap = document.createElement("div");
+        sizeWrap.setAttribute("style", "display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0");
+        sizeWrap.appendChild(size);
+        sizeWrap.appendChild(sizeValue);
+        pad.panelBody.appendChild(panelRow("Size", sizeWrap));
+
+        var opacity = document.createElement("input");
+        opacity.id = "r2aPadOpacity";
+        opacity.type = "range";
+        opacity.min = "15";
+        opacity.max = "100";
+        opacity.step = "5";
+        opacity.value = String(Math.round(item.op * 100));
+        opacity.setAttribute("style", "flex:1 1 auto;min-width:0;accent-color:#7fdcff");
+        var opacityValue = document.createElement("span");
+        opacityValue.setAttribute("style", "flex:0 0 42px;text-align:right;font:600 11px/1 Roboto,system-ui,sans-serif;color:rgba(190,225,255,0.85)");
+        opacityValue.textContent = Math.round(item.op * 100) + "%";
+        opacity.addEventListener("input", function () {
+            item.op = clamp((parseInt(opacity.value, 10) || 60) / 100, 0.1, 1);
+            opacityValue.textContent = Math.round(item.op * 100) + "%";
+            placePadButton(item, pad.els[item.id]);
+            savePad();
+        });
+        var opacityWrap = document.createElement("div");
+        opacityWrap.setAttribute("style", "display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0");
+        opacityWrap.appendChild(opacity);
+        opacityWrap.appendChild(opacityValue);
+        pad.panelBody.appendChild(panelRow("Opacity", opacityWrap));
+
+        var remove = chromeButton("DELETE", function () {
+            deletePadItem(item.id);
+        });
+        remove.id = "r2aPadDelete";
+        remove.setAttribute("style", [
+            "flex:1 1 auto", "height:32px", "justify-content:center",
+            "color:#ffd9d9", "background:rgba(255,90,90,0.16)",
+            "border:1px solid rgba(255,140,140,0.55)", "border-radius:6px",
+            "font:600 10px/30px Roboto,system-ui,sans-serif", "letter-spacing:0.6px",
+            "display:flex", "align-items:center", "-webkit-user-select:none",
+            "user-select:none"
+        ].join(";"));
+        pad.panelBody.appendChild(remove);
+    }
+
+    function addPadItem() {
+        ensurePad();
+        if (!pad.items) {
+            pad.items = padDefaultLayout();
+        }
+        var v = padViewport();
+        var size = Math.max(48, Math.round(Math.min(v.w, v.h) * 0.16));
+        var item = {
+            id: "b" + pad.seq++,
+            label: "A",
+            kc: 90, code: "KeyZ", key: "z",
+            x: 0.5, y: 0.42,
+            w: size / v.w, h: size / v.h,
+            shape: "circle", op: 0.62
+        };
+        pad.items.push(item);
+        if (!pad.editing) {
+            pad.visible = true;
+        }
+        renderPad();
+        savePad();
+        if (pad.editing) {
+            selectPadItem(item.id);
+        }
+    }
+
+    function deletePadItem(id) {
+        var kept = [];
+        for (var i = 0; i < pad.items.length; i++) {
+            if (pad.items[i].id !== id) {
+                kept.push(pad.items[i]);
+            }
+        }
+        pad.items = kept;
+        pad.selectedId = null;
+        renderPad();
+        savePad();
+        renderInspector();
+    }
+
+    function setToolbarVisible(visible) {
+        // The editor bar owns the top of the screen; the small corner icons
+        // would sit on top of its DONE button.
+        var icons = [button, kbButton, pad.button];
+        for (var i = 0; i < icons.length; i++) {
+            if (icons[i]) {
+                icons[i].style.display = visible ? "" : "none";
+            }
+        }
+    }
+
+    function openMapper() {
+        ensurePad();
+        ensureMapperChrome();
+        if (!pad.items || !pad.items.length) {
+            pad.items = padDefaultLayout();
+            renderPad();
+            savePad();
+        }
+        pad.editing = true;
+        pad.visible = true;
+        showKeyboard(false);
+        showPanel(false);
+        renderPad();
+        pad.backdrop.style.display = "block";
+        pad.bar.style.display = "flex";
+        setToolbarVisible(false);
+        if (!pad.selectedId && pad.items.length) {
+            selectPadItem(pad.items[0].id);
+        } else {
+            renderInspector();
+        }
+        forward("info", "button editor opened (" + pad.items.length + " buttons)");
+    }
+
+    function closeMapper() {
+        if (!pad.editing) {
+            return;
+        }
+        releaseAllPadPresses();
+        pad.editing = false;
+        pad.selectedId = null;
+        pad.drag = null;
+        if (pad.backdrop) {
+            pad.backdrop.style.display = "none";
+        }
+        if (pad.bar) {
+            pad.bar.style.display = "none";
+        }
+        if (pad.panel) {
+            pad.panel.style.display = "none";
+        }
+        setToolbarVisible(true);
+        for (var i = 0; i < pad.items.length; i++) {
+            paintPad(pad.items[i], pad.els[pad.items[i].id], false);
+        }
+        savePad();
+    }
+
+    function releaseAllPadPresses() {
+        for (var id in pad.presses) {
+            var entry = pad.presses[id];
+            delete pad.presses[id];
+            paintPad(entry.item, entry.el, false);
+            try {
+                entry.target.dispatchEvent(entry.up);
+            } catch (e) {
+                /* ignore */
+            }
+        }
+        pad.drag = null;
+    }
+
+    function setPadVisible(visible) {
+        ensurePad();
+        releaseAllPadPresses();
+        pad.visible = !!visible;
+        if (pad.root) {
+            pad.root.style.display = pad.visible ? "block" : "none";
+        }
+        paintPadButtonState();
+        savePad();
+    }
+
+    function paintPadButtonState() {
+        if (!pad.button) {
+            return;
+        }
+        var on = pad.visible && !pad.editing;
+        pad.button.style.opacity = on ? "0.9" : "0.5";
+        pad.button.style.background = on
+            ? "rgba(120,220,255,0.25)"
+            : "rgba(0,0,0,0.45)";
+        pad.button.style.borderColor = on
+            ? "rgba(200,245,255,0.9)"
+            : "rgba(158,238,255,0.35)";
+    }
+
+    function ensurePadButton() {
+        if (pad.button || !document.body) {
+            return;
+        }
+        var el = document.createElement("div");
+        el.id = "r2aPadButton";
+        el.innerHTML = PAD_ICON;
+        el.setAttribute("style", [
+            "position:fixed", "top:2px", "right:66px", "width:28px", "height:26px",
+            "display:flex", "align-items:center", "justify-content:center",
+            "background:rgba(0,0,0,0.45)", "border:1px solid rgba(158,238,255,0.35)",
+            "border-radius:6px", "z-index:2147483646", "opacity:0.55",
+            "-webkit-user-select:none", "user-select:none", "touch-action:manipulation"
+        ].join(";"));
+
+        var timer = null;
+        var longPressed = false;
+        var cancel = function () {
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+        };
+        el.addEventListener("pointerdown", function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            longPressed = false;
+            cancel();
+            timer = setTimeout(function () {
+                timer = null;
+                longPressed = true;
+                openMapper();
+            }, 450);
+        });
+        el.addEventListener("pointerup", function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            cancel();
+            if (!longPressed) {
+                if (pad.editing) {
+                    closeMapper();
+                } else {
+                    setPadVisible(!pad.visible);
+                }
+            }
+            longPressed = false;
+        });
+        el.addEventListener("pointercancel", function (event) {
+            event.stopPropagation();
+            cancel();
+            longPressed = false;
+        });
+        el.addEventListener("contextmenu", function (event) {
+            event.preventDefault();
+        });
+        document.body.appendChild(el);
+        pad.button = el;
+        paintPadButtonState();
+    }
+
+    // A finger that slides off a button (or a lost pointer capture) must not
+    // leave a key held down for the rest of the session.
+    window.addEventListener("pointerup", function (event) {
+        endPadPress(event);
+        endPadDrag(event);
+    }, true);
+    window.addEventListener("pointercancel", function (event) {
+        endPadPress(event);
+        endPadDrag(event);
+    }, true);
+
     // --------------------------------------------------------------- upkeep
 
     function nudgeLayout() {
@@ -1229,6 +2304,8 @@
     function tick() {
         ensureUi();
         ensureKeyboard();
+        ensurePadButton();
+        ensurePad();
         hookGameActive();
         hookRenderProbe();
         hookSceneTrace();
@@ -1258,6 +2335,17 @@
     add("info", "host ready");
     setInterval(tick, 500);
 
+    window.addEventListener("resize", function () {
+        // Sizes and positions are stored as viewport fractions, so only the
+        // font size (which depends on pixels) and the editor chrome need work.
+        if (!pad.root || !pad.items) {
+            return;
+        }
+        for (var i = 0; i < pad.items.length; i++) {
+            placePadButton(pad.items[i], pad.els[pad.items[i].id]);
+        }
+    });
+
     window.RPG2Android = {
         __hostLoaded: true,
         report: report,
@@ -1270,9 +2358,23 @@
         keyboard: function (visible) {
             showKeyboard(visible !== false);
         },
+        pad: function (visible) {
+            setPadVisible(visible !== false);
+        },
+        mapper: function (open) {
+            if (open === false) {
+                closeMapper();
+            } else {
+                openMapper();
+            }
+        },
         // Called by MainActivity on the hardware back button: closes an open
         // overlay instead of sending Esc / leaving the app.
         handleBack: function () {
+            if (pad.editing) {
+                closeMapper();
+                return true;
+            }
             if (kbVisible) {
                 showKeyboard(false);
                 return true;

@@ -93,11 +93,12 @@ editor and the v2 signer are plain standard library code.
   scene updates unless `window.top.document.hasFocus()` is true, which is
   unreliable inside a WebView and freezes the game on a black splash screen
   while the music keeps playing.
-* Back button closes the virtual keyboard or the diagnostics panel if one is
-  open, otherwise sends <kbd>Esc</kbd> (cancel/menu); press twice to exit.
+* Back button closes the button editor, the virtual keyboard or the
+  diagnostics panel if one is open, otherwise sends <kbd>Esc</kbd>
+  (cancel/menu); press twice to exit.
 * Game audio/timers pause when the app goes to the background.
 
-## Shell overlay: diagnostics and virtual keyboard
+## Shell overlay: diagnostics, virtual keyboard, on-screen buttons
 
 `android/app/src/main/assets/rpg2android/host.js` ships **inside the app**, not
 inside the game. `MainActivity` reads it and evaluates it into the page once the
@@ -112,6 +113,26 @@ renderer, frame count, canvas geometry, sampled pixels). Close it with the `✕`
 button in its header. The same lines are mirrored to logcat under the
 `RPG2Android` tag, and `chrome://inspect` works against the WebView when a
 computer is connected.
+
+**On-screen buttons (keymapper).** The gamepad icon right of the keyboard button
+shows/hides a set of floating buttons that send a key to the game while held —
+Winlator-style controls for games that expect a keyboard. The first start comes
+with a D-pad plus `OK` (`Z`) and `X` (`X`). **Hold** the icon (half a second) to
+open the editor:
+
+| In the editor | |
+| --- | --- |
+| `+ ADD` | add a button (defaults to `Z`, 48 px, circle) |
+| drag a button | move it |
+| drag its corner dot | resize it (circles stay round) |
+| bottom panel | label, key (Esc…F12, letters, digits, arrows, modifiers), shape (circle / round / square / pill), size, opacity, delete |
+| `DONE` | leave the editor, keep the buttons |
+
+The layout is stored in `localStorage` (`r2a.controls.v1`), so it survives
+restarts and is kept per app (not per save file). Positions are viewport
+fractions, so the buttons stay where you put them in either orientation. Buttons
+never send touches to the game, and hiding the pad or leaving the editor
+releases any key still held.
 
 **Virtual keyboard.** The keyboard icon next to the `i` opens a translucent US
 laptop layout over the bottom of the screen — Esc, F1–F12, Tab, Caps, Shift,
@@ -128,7 +149,7 @@ tap twice to lock them (shown with an amber outline).
 android/                 Java WebView app + Gradle project (built only in CI)
   app/src/main/java/com/rpg2android/MainActivity.java
   app/src/main/assets/www/index.html   placeholder, replaced at inject time
-  app/src/main/assets/rpg2android/host.js   shell overlay: diagnostics + keyboard
+  app/src/main/assets/rpg2android/host.js   shell overlay: diagnostics + keyboard + buttons
 build_apk.py             CLI: inject a game into the template and sign it
 tools/identity.py        game root detection, name + package id
 tools/axml.py            binary AndroidManifest.xml reader/writer

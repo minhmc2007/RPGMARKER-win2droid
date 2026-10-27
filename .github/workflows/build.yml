@@ -227,6 +227,8 @@ jobs:
           # the overlay is part of the shell, and nothing is injected into the game
           unzip -l "$apk" | grep -q 'assets/rpg2android/host.js'
           unzip -p "$apk" assets/rpg2android/host.js | grep -q 'r2aKeyboard'
+          unzip -p "$apk" assets/rpg2android/host.js | grep -q 'r2aPadButton'
+          unzip -p "$apk" assets/rpg2android/host.js | grep -q 'r2a.controls.v1'
           ! unzip -l "$apk" | grep -q 'assets/www/rpg2android/'
           unzip -p "$apk" assets/www/index.html | cmp -s - sample-game/index.html
 
