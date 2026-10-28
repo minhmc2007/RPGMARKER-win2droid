@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Minimal reader/writer for Android's binary XML (AXML) format.
+"""Minimal reader/writer for Android binary XML (AXML).
 
-Only what this project needs: read the string pool, walk the element tree and
-point attributes at (possibly new) strings, then re-serialise the string pool.
-Element and attribute layout stays byte-for-byte identical, so no node offsets
-or resource ids can break - only the string pool chunk grows or shrinks.
+Reads the string pool, walks the element tree and points attributes at strings.
+Elements and attributes keep their exact layout; only the string pool changes.
 """
 from __future__ import annotations
 
@@ -133,7 +131,7 @@ class StringPool:
                 raw = text.encode("utf-16-le")
                 data += _write_len16(len(raw) // 2)
                 data += raw + b"\x00\x00"
-        while len(data) % 4:  # keep the pool 4-byte aligned like aapt does
+        while len(data) % 4:  # keep the pool 4-byte aligned, like aapt
             data.append(0)
 
         header_size = 28
@@ -190,8 +188,6 @@ class AxmlDoc:
         self.header = data[:header_size]
         self.pool = StringPool(data[header_size : header_size + chunk_size])
         self.rest = bytearray(data[header_size + chunk_size :])
-
-    # -- string helpers ---------------------------------------------------
     def string_at(self, index: int) -> str:
         if index == NO_ENTRY or index >= len(self.pool.strings):
             return ""
@@ -202,8 +198,6 @@ class AxmlDoc:
 
     def add_string(self, text: str) -> int:
         return self.pool.add(text)
-
-    # -- tree walking -----------------------------------------------------
     def iter_elements(self) -> list[Element]:
         elements: list[Element] = []
         buf = self.rest
@@ -237,7 +231,7 @@ class AxmlDoc:
         return elements
 
     def find_attribute(self, element: Element, attr_name: str, ns_uri: str | None) -> Attribute | None:
-        """Find an attribute by name; *ns_uri* None means "no namespace"."""
+        """Find an attribute by name. ns_uri None means no namespace."""
         ns_index = self.index_of(ns_uri) if ns_uri else NO_ENTRY
         for attr in element.attributes:
             if attr.ns != ns_index:
@@ -245,8 +239,6 @@ class AxmlDoc:
             if self.string_at(attr.name) == attr_name:
                 return attr
         return None
-
-    # -- mutation ---------------------------------------------------------
     def set_attribute_string(self, attr: Attribute, text: str) -> None:
         index = self.add_string(text)
         struct.pack_into("<I", self.rest, attr.offset + 8, index)   # rawValue
@@ -272,7 +264,7 @@ def patch_manifest(
     label: str | None = None,
     orientation: str | None = None,
 ) -> bytes:
-    """Re-brand a binary AndroidManifest.xml."""
+    """Patch package, label and orientation in a binary AndroidManifest.xml."""
     doc = AxmlDoc(data)
     if orientation is not None and orientation not in ORIENTATIONS:
         raise AxmlError(
@@ -313,7 +305,7 @@ def patch_manifest(
 
 
 def read_manifest(data: bytes) -> dict[str, object]:
-    """Small helper used by the tests: current package / label / orientation."""
+    """Read package, label and orientation. Used by the tests."""
     doc = AxmlDoc(data)
     info: dict[str, object] = {}
     for element in doc.iter_elements():

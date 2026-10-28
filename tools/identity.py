@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Detect an RPG Maker MV/MZ game folder and derive its Android identity.
 
-The application name comes from the *game root folder* (the folder that holds
-index.html), never from its parent. The application id is
-``com.<random-ish>.<gamename-slug>`` where the random-looking part is a stable
-hash of the name, so rebuilding the same game keeps the same package id.
+The name comes from the folder that holds index.html. The app id is
+``com.<hash>.<slug>``, with a stable hash so rebuilds keep the same id.
 """
 from __future__ import annotations
 
@@ -17,7 +15,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-# Files that prove a folder is the root of an RPG Maker MV/MZ deployment.
+# Files that mark the root of an RPG Maker MV/MZ deployment.
 RUNTIME_FILES = {"game.exe", "nw.dll", "node.dll", "package.json", "credits.html"}
 
 
@@ -28,7 +26,7 @@ class IdentityError(RuntimeError):
 def _entries(path: Path) -> list[Path]:
     try:
         return list(path.iterdir())
-    except OSError as exc:  # permission problems etc.
+    except OSError as exc:  # permission problems, etc.
         raise IdentityError(f"cannot list {path}: {exc}") from exc
 
 
@@ -37,7 +35,7 @@ def _names(path: Path) -> set[str]:
 
 
 def is_game_dir(path: Path) -> bool:
-    """True when *path* looks like an RPG Maker MV/MZ content folder."""
+    """True when path looks like an RPG Maker MV/MZ content folder."""
     if not path.is_dir():
         return False
     names = _names(path)
@@ -49,11 +47,11 @@ def is_game_dir(path: Path) -> bool:
 
 
 def display_name(folder_name: str) -> str:
-    """Turn a folder name into something presentable on a launcher."""
+    """Turn a folder name into a launcher-friendly name."""
     name = unicodedata.normalize("NFC", folder_name).strip()
-    # Trailing "_", "-" or spaces are very common on extracted archives.
+    # Extracted archives often end with "_", "-" or spaces.
     name = re.sub(r"[\s_\-]+$", "", name)
-    # Drop a leading "[group]" / "(group)" tag, e.g. "[Kimochi] ...".
+    # Drop a leading "[group]" or "(group)" tag.
     stripped = re.sub(r"^[\[(][^\])]*[\])]+\s*", "", name)
     if stripped:
         name = stripped
@@ -76,8 +74,8 @@ def slugify(name: str) -> str:
 
 
 def random_part(name: str) -> str:
-    """Stable, random-looking, always letters (package segments cannot start
-    with a digit, and eyeballing hex gets confusing)."""
+    """Stable, random-looking letters. Package segments cannot start with a
+    digit, and hex is harder to eyeball."""
     digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
     return "".join(chr(ord("a") + int(ch, 16)) for ch in digest)
 
@@ -90,7 +88,7 @@ def make_package_id(name: str, slug: str | None = None) -> str:
 @dataclass
 class Game:
     root: Path | None      # folder used for the name (None in name-only mode)
-    content: Path | None   # folder that contains index.html
+    content: Path | None   # folder that holds index.html
     name: str
     package_id: str
 
@@ -117,8 +115,8 @@ def _pick_root(children: list[Path]) -> Path | None:
 
     def score(path: Path) -> tuple[int, int]:
         names = _names(path)
-        # Prefer a Windows export (has the NW.js runtime) and the biggest
-        # index.html, which is usually the real game rather than a launcher.
+        # Prefer a Windows export (with the NW.js runtime) and the biggest
+        # index.html, which is usually the game and not a launcher.
         runtime = 1 if names & RUNTIME_FILES else 0
         try:
             size = (path / "index.html").stat().st_size
@@ -131,10 +129,9 @@ def _pick_root(children: list[Path]) -> Path | None:
 
 def resolve(game_dir: str | Path | None, name: str | None = None,
             package_id: str | None = None) -> Game:
-    """Find the game root inside *game_dir* and build its identity.
+    """Find the game root inside game_dir and build its identity.
 
-    *game_dir* may be None when only a name is known (GitHub Actions has no
-    game files in the repository).
+    game_dir may be None when only a name is known (for example in CI).
     """
     if game_dir is None:
         if not name:

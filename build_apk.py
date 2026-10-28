@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Turn an RPG Maker MV/MZ (Windows) game folder into an installable APK.
+"""Turn an RPG Maker MV/MZ game folder into an installable APK.
 
-This script never builds an Android app. It takes the empty WebView APK that
-GitHub Actions produced (prebuilt/base.apk), rewrites its AndroidManifest.xml,
-drops the game into assets/www/, and re-signs everything with the debug key.
+Takes the empty WebView APK from prebuilt/base.apk, patches its manifest, adds
+the game under assets/www/ and signs the result with the debug key.
 
     python build_apk.py --game-dir "../[Kimochi] RJ01610452 EN"
-    python build_apk.py --game-dir "/path/to/Game" --name "My Game" --orientation portrait
+    python build_apk.py --game-dir "/path/to/Game" --name "My Game"
 """
 from __future__ import annotations
 
@@ -25,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_TEMPLATE = REPO_ROOT / "prebuilt" / "base.apk"
 DEFAULT_KEY_DIR = REPO_ROOT / "tools" / "debug"
 
-# NW.js / Chromium runtime, never needed by the web layer.
+# NW.js / Chromium runtime, not needed by the web layer.
 SKIP_DIRS = {"swiftshader", "locales", "gameupdate", "node_modules", "__pycache__"}
 SKIP_SUFFIXES = {".exe", ".dll", ".bat", ".cmd", ".sh", ".pak", ".log"}
 SKIP_FILES = {"icudtl.dat", "v8_context_snapshot.bin", "debug.log"}
@@ -33,8 +32,8 @@ SKIP_FILES = {"icudtl.dat", "v8_context_snapshot.bin", "debug.log"}
 MAX_ENTRY_BYTES = 0xFFFFFFFF - 1
 MAX_TOTAL_BYTES = 3_800_000_000
 
-# Shell overlay (diagnostics panel + virtual keyboard). MainActivity reads it
-# from the APK's own assets at runtime, so game files are never touched.
+# Shell overlay (diagnostics panel + virtual keyboard + on-screen buttons).
+# MainActivity loads it from the APK's own assets, so game files stay untouched.
 HOST_SOURCE = REPO_ROOT / "android" / "app" / "src" / "main" / "assets" / "rpg2android" / "host.js"
 HOST_ENTRY = "assets/rpg2android/host.js"
 
@@ -44,7 +43,7 @@ class BuildError(RuntimeError):
 
 
 def _skip_template_entry(name: str) -> bool:
-    # The shell's own assets are replaced by the game (or re-added below).
+    # The game replaces these assets; the overlay is added again below.
     return name.startswith(("META-INF/", "assets/www/", "assets/rpg2android/"))
 
 

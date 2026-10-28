@@ -1,16 +1,8 @@
 package com.rpg2android;
 
 /**
- * Path rules for the movie files the shell copies out of the APK.
- *
- * Android's media stack opens media files itself and cannot read a path that
- * only exists inside an APK, so a &lt;video&gt; element fed
- * {@code file:///android_asset/www/movies/...} never plays. The shell therefore
- * extracts the requested movie into its own files directory first; this class
- * decides which requests are allowed to trigger that copy.
- *
- * Kept free of Android imports on purpose: the rules are plain string handling
- * and are unit tested on the JVM.
+ * Path rules for movie files copied out of the APK. No Android imports, so the
+ * rules are unit tested on the JVM.
  */
 final class MediaPath {
 
@@ -24,12 +16,8 @@ final class MediaPath {
     }
 
     /**
-     * Normalises a game relative media path such as {@code movies/feather.webm}.
-     *
-     * @param path path as the game wrote it (leading {@code ./} and Windows
-     *             separators are tolerated)
-     * @return the path to use relative to the game root, or null when this is
-     *         not a plain file inside a media directory
+     * Normalises a game relative path such as movies/feather.webm. Returns null
+     * when this is not a plain file inside a media directory.
      */
     static String normalize(String path) {
         if (path == null) {
@@ -63,8 +51,7 @@ final class MediaPath {
         if (!knownExtension) {
             return null;
         }
-        // No empty, current or parent segments: the result is used as a file
-        // name below the media directory and must not escape it.
+        // No empty, "." or ".." segments: the path must stay below the media dir.
         for (String segment : cleaned.split("/", -1)) {
             if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
                 return null;

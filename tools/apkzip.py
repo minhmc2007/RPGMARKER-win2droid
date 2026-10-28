@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Read the template APK, write a new one with game files injected.
+"""Read the template APK and write a new one with the game files.
 
-Kept deliberately small: preserve compression of copied entries, store media
-files (they are already compressed) and 4-byte align stored entries so Android
-can mmap them.
+Copied entries keep their compression. Media files are stored and 4-byte
+aligned so Android can mmap them.
 """
 from __future__ import annotations
 
@@ -17,7 +16,7 @@ STORE_EXTENSIONS = {
 }
 
 ALIGNMENT = 4
-EXTRA_ID_PADDING = 0xD935  # what zipalign uses
+EXTRA_ID_PADDING = 0xD935  # same id zipalign uses
 
 
 class ApkZipError(RuntimeError):
@@ -35,15 +34,13 @@ class ApkWriter:
         self.zip = zipfile.ZipFile(self.path, "w", compression=zipfile.ZIP_DEFLATED,
                                    allowZip64=False)
         self._entries = 0
-
-    # -- internals --------------------------------------------------------
     def _padding_extra(self, name: str, stored: bool) -> bytes:
         if not stored or self.zip.fp is None:
             return b""
         offset = self.zip.fp.tell()
         name_len = len(name.encode("utf-8"))
         pad = (-(offset + 30 + name_len + 4)) % ALIGNMENT
-        # 4 bytes of header (id + length) plus the padding bytes themselves.
+        # 4 bytes of header plus the padding itself.
         return struct.pack("<HH", EXTRA_ID_PADDING, pad) + b"\x00" * pad
 
     def _add(self, name: str, data: bytes, compress_type: int | None = None) -> None:
@@ -56,8 +53,6 @@ class ApkWriter:
         info.extra = self._padding_extra(name, compress_type == zipfile.ZIP_STORED)
         self.zip.writestr(info, data)
         self._entries += 1
-
-    # -- public API -------------------------------------------------------
     def add_bytes(self, name: str, data: bytes, compress_type: int | None = None) -> None:
         self._add(name, data, compress_type)
 

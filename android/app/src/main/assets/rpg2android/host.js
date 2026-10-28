@@ -1,32 +1,4 @@
-/*
- * rpg2android host overlay.
- *
- * Part of the shell APK, not of the game: MainActivity reads this file from
- * assets/rpg2android/ and evaluates it into the game page once the document is
- * committed. No game file is ever modified, and the same overlay ships with
- * every game built from the template.
- *
- * Three pieces of UI, all floating above the canvas:
- *
- *   - the diagnostics panel: tap the small "i" in the top-right corner, or it
- *     opens by itself after a JS error / a canvas that only paints black. It
- *     has its own ✕ close button. What it sees is kept in a ring buffer and
- *     mirrored to logcat through the RPG2Host bridge (when present).
- *   - the virtual keyboard: tap the keyboard button next to it to open a
- *     translucent US laptop layout (Esc, F1-F12, Ctrl/Alt/Shift/Caps, arrows)
- *     that types into the game, including any focused text field. ✕ closes it,
- *     and the hardware back button closes it too.
- *   - the on-screen pad (keymapper): floating game buttons that send a key to
- *     the game while held. Tap the gamepad button to show/hide them; hold it
- *     to open the editor, where buttons are added, moved, resized, relabelled,
- *     reshaped and deleted, and the layout is stored in localStorage.
- *
- * All three only observe/inject input; the game logic itself is untouched.
- *
- * It also keeps movies playable: RPG Maker hands its <video> elements a path
- * inside the APK, which Android's media stack cannot open, so the shell
- * extracts the file on demand and the element is pointed at that copy.
- */
+/* rpg2android shell overlay: diagnostics, virtual keyboard, on-screen buttons. */
 (function () {
     "use strict";
 
@@ -70,8 +42,6 @@
         contextLost: false,
         error: ""
     };
-
-    // ---------------------------------------------------------------- logging
 
     function stamp() {
         var d = new Date();
@@ -167,16 +137,7 @@
         showPanel(true);
     });
 
-    // ------------------------------------------------------------ game media
-    //
-    // Android's media stack opens media files itself, and a path that only
-    // exists inside the APK (file:///android_asset/www/movies/...) is not a file
-    // it can open: the element reports an error before its first frame. RPG
-    // Maker asks for movies as plain relative paths, so each one is extracted
-    // into the app's own files directory on demand (RPG2Host.mediaFile) and the
-    // element is pointed at that copy instead. When the copy cannot be made the
-    // game's own URL is left alone, and if the copy fails later the element falls
-    // back to the game's URL once.
+    // Movies must be copied out of the APK before they can play.
 
     var MEDIA_SRC = /^(?:\.\/)?(?:movies|videos)\/[^/]+\.(?:webm|mp4|m4v|ogv|ogg)$/i;
     // Other containers the same movie may have been published with.
@@ -189,10 +150,7 @@
     };
     var media = { hooked: false, routed: 0, missing: 0, fallbacks: 0, swapped: 0 };
 
-    // RPG Maker picks the container from canPlayType(), which is only a guess:
-    // when the WebView reports nothing for 'video/webm; codecs="vp8, vorbis"'
-    // the interpreter asks for a .mp4 that a Windows-made game never shipped.
-    // The shell tries the containers the APK does contain before giving up.
+    // RPG Maker may ask for a container the game did not ship.
     function mediaCandidates(path) {
         var match = /^(.+)\.([a-z0-9]+)$/i.exec(path);
         var list = [path];
@@ -231,10 +189,7 @@
         }
         media.hooked = true;
 
-        // The element is only re-pointed at the game's own URL while it still
-        // holds the copy we handed it: anything else (the plugin clearing src
-        // while tearing the video down, RPG Maker swapping in a .mp4) is its
-        // business, and retrying on top of that would resurrect a dead video.
+        // Retry only while the element still holds our copy.
         function retry(element) {
             if (!element.__r2aAsset || element.__r2aRetried ||
                     descriptor.get.call(element) !== element.__r2aUrl) {
@@ -295,14 +250,8 @@
 
     installMediaHook();
 
-    // RPG Maker chooses the audio extension from the user agent, not from the
-    // files: AudioManager.audioFileExt returns ".ogg" only on a desktop browser
-    // and ".m4a" on every mobile device, because iOS Safari cannot decode ogg.
-    // A game authored on Windows ships ogg only, so on an Android WebView (which
-    // does decode ogg) every BGM/SE/BGS request asks for a file the APK does not
-    // contain. The shell reads the extension the audio folders really use
-    // (RPG2Host.audioFileExt) and hands the game that one instead; a game that
-    // mixes extensions, or has no audio, is left with the engine's choice.
+    // Use the extension the game ships, not the one RPG Maker guesses from the
+    // user agent. Mixed or missing audio keeps the engine's choice.
     var audio = { ext: "", hooked: false, warned: false };
 
     function installAudioExtHook() {
@@ -337,14 +286,8 @@
 
     installAudioExtHook();
 
-    // ---------------------------------------------------------------- probing
-
     function hookGameActive() {
-        // MZ only updates the current scene while window.top.document.hasFocus().
-        // In an Android WebView that is a race: the page can be fully visible and
-        // still report no focus, which freezes the game (audio keeps playing, the
-        // canvas keeps rendering the last frame). A visible page is an active
-        // game, so treat visibility as the condition.
+        // Focus is unreliable in a WebView, so treat a visible page as active.
         var manager = window.SceneManager;
         if (!manager || manager.__r2aGameActive ||
                 typeof manager.isGameActive !== "function") {
@@ -580,7 +523,8 @@
         var body = document.body;
         return (
             "view inner=" + window.innerWidth + "x" + window.innerHeight +
-            " doc=" + (doc ? doc.clientWidth + "x" + doc.clientHeight : "?") +            "body=" + (body ? body.clientWidth + "x" + body.clientHeight : "?") +
+            " doc=" + (doc ? doc.clientWidth + "x" + doc.clientHeight : "?") +
+            " body=" + (body ? body.clientWidth + "x" + body.clientHeight : "?") +
             " dpr=" + (window.devicePixelRatio || 1) +
             " focus=" + (document.hasFocus() ? 1 : 0) +
             " vis=" + document.visibilityState
@@ -747,8 +691,6 @@
         ].join("\n");
     }
 
-    // ------------------------------------------------------------------- ui
-
     function ensureUi() {
         if (button || !document.body) {
             return;
@@ -870,8 +812,6 @@
             reportTimer = null;
         }
     }
-
-    // --------------------------------------------------------------- keyboard
 
     var KB_ICON =
         "<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='#9ef' " +
@@ -1223,7 +1163,7 @@
         if (entry.element) {
             entry.element.setAttribute("style", entry.element.__r2aBase);
         }
-        // A one-shot modifier is spent by the key it modified.
+        // A one-shot modifier is spent after one key.
         var cleared = false;
         for (var name in kbLock) {
             if (kbMods[name] && !kbLock[name]) {
@@ -1235,8 +1175,7 @@
         if (cleared) {
             paintMods();
         }
-        // RPG Maker samples input once per frame, so a tap must stay down long
-        // enough to be seen by Input.update().
+        // Keep the key down long enough for Input.update() to see it.
         var delay = Math.max(0, 90 - (Date.now() - entry.at));
         setTimeout(function () {
             try {
@@ -1335,7 +1274,7 @@
         }
         root.appendChild(body);
 
-        // Taps on the keyboard must never reach the game's touch handlers.
+        // Taps on the keyboard must not reach the game.
         var swallow = function (event) {
             event.stopPropagation();
         };
@@ -1370,8 +1309,7 @@
             "border-radius:6px", "z-index:2147483646", "opacity:0.55",
             "-webkit-user-select:none", "user-select:none", "touch-action:manipulation"
         ].join(";"));
-        // Toggle on pointerdown: preventing the default there suppresses the
-        // synthetic click, and it also keeps the game from seeing the tap.
+        // pointerdown prevents the synthetic click and keeps the tap from the game.
         kbButton.addEventListener("pointerdown", function (event) {
             event.preventDefault();
             event.stopPropagation();
@@ -1401,8 +1339,6 @@
                 : "rgba(158,238,255,0.35)";
         }
     }
-
-    // ------------------------------------------------------------- on-screen pad
 
     var PAD_STORE = "r2a.controls.v1";
 
@@ -1468,8 +1404,7 @@
     }
 
     function padViewportReady() {
-        // A WebView that reports 0x0 during boot would turn the default sizes
-        // into full-screen buttons, and they would be saved that way.
+        // Avoid saving full-screen buttons from a 0x0 viewport during boot.
         var v = padViewport();
         return Math.min(v.w, v.h) >= 64;
     }
@@ -1532,8 +1467,6 @@
         }
         return spec;
     }
-
-    // ------------------------------------------------------- pad: persistence
 
     function savePad() {
         try {
@@ -1627,8 +1560,6 @@
         return items;
     }
 
-    // ------------------------------------------------------------ pad: render
-
     function padRadius(item) {
         if (item.shape === "circle") {
             return "50%";
@@ -1716,8 +1647,7 @@
         }
         delete pad.presses[event.pointerId];
         paintPad(entry.item, entry.el, false);
-        // RPG Maker samples the input once per frame, so a quick tap has to
-        // stay down long enough for Input.update() to see it.
+        // Keep a quick tap down long enough for Input.update() to see it.
         var delay = Math.max(0, 90 - (Date.now() - entry.at));
         setTimeout(function () {
             try {
@@ -1889,7 +1819,7 @@
             "position:fixed", "left:0", "top:0", "right:0", "bottom:0",
             "z-index:2147483643", "pointer-events:none"
         ].join(";"));
-        // The game must never see a tap that belongs to an on-screen button.
+        // The game must not see taps on an on-screen button.
         var swallow = function (event) {
             event.stopPropagation();
         };
@@ -1910,13 +1840,8 @@
         renderPadNow();
     }
 
-    // ------------------------------------------------------------ pad: editor
-
     function stopGameKeys(element) {
-        // RPG Maker cancels Backspace, Tab, PgUp/PgDn and the arrow keys on the
-        // document (Input._shouldPreventDefault), which leaves a text field in
-        // the overlay unable to delete a character or move its caret. Keep the
-        // keystrokes inside the overlay while one of its fields has focus.
+        // Keep Backspace/Tab/arrows inside the overlay so its fields stay editable.
         var swallow = function (event) {
             event.stopPropagation();
         };
@@ -2144,7 +2069,7 @@
             savePad();
         });
 
-        // Backspace now works, but a one-tap clear is friendlier than eight taps.
+        // Clear is easier than eight Backspace taps.
         var labelClear = chromeButton("CLR", function () {
             labelInput.value = "";
             item.label = "";
@@ -2332,8 +2257,7 @@
     }
 
     function setToolbarVisible(visible) {
-        // The editor bar owns the top of the screen; the small corner icons
-        // would sit on top of its DONE button.
+        // The editor bar covers the corner icons.
         if (button) {
             button.style.display = visible ? "" : "none";
         }
@@ -2495,8 +2419,7 @@
         paintPadButtonState();
     }
 
-    // A finger that slides off a button (or a lost pointer capture) must not
-    // leave a key held down for the rest of the session.
+    // Do not leave a key held when the finger slides off a button.
     window.addEventListener("pointerup", function (event) {
         endPadPress(event);
         endPadDrag(event);
@@ -2506,13 +2429,9 @@
         endPadDrag(event);
     }, true);
 
-    // --------------------------------------------------------------- upkeep
-
     function nudgeLayout() {
-        // MZ only recomputes the canvas size on resize. If the WebView reports a
-        // 0x0 (or absurdly small) viewport during boot the canvas ends up with a
-        // 0px CSS size and the screen stays black even though the game is
-        // running. Re-running the layout once the viewport is sane fixes it.
+        // A 0x0 viewport during boot leaves the canvas at 0px. Run the layout
+        // again once the viewport is sane.
         try {
             var G = window.Graphics;
             if (!G || !G._canvas || typeof G._updateAllElements !== "function") {
@@ -2568,8 +2487,7 @@
     setInterval(tick, 500);
 
     window.addEventListener("resize", function () {
-        // Sizes and positions are stored as viewport fractions, so only the
-        // font size (which depends on pixels) and the editor chrome need work.
+        // Layout is stored as viewport fractions, so only font size changes.
         if (!pad.root || !pad.items) {
             return;
         }
@@ -2600,8 +2518,7 @@
                 openMapper();
             }
         },
-        // Called by MainActivity on the hardware back button: closes an open
-        // overlay instead of sending Esc / leaving the app.
+        // MainActivity calls this on hardware back.
         handleBack: function () {
             if (pad.editing) {
                 closeMapper();

@@ -30,18 +30,14 @@ import java.io.InputStream;
 import java.util.Arrays;
 
 /**
- * Minimal WebView host for RPG Maker MV / MZ games.
- *
- * The game itself lives in assets/www/ and is loaded from
- * file:///android_asset/www/index.html. The build script (build_apk.py)
- * replaces that folder and patches the application id / label, so nothing
- * game specific is hardcoded here.
+ * Minimal WebView host for RPG Maker MV / MZ games. The game is loaded from
+ * assets/www/; build_apk.py replaces it and patches the app id and label.
  */
 public class MainActivity extends Activity {
     private static final String TAG = "RPG2Android";
     private static final String START_URL = "file:///android_asset/www/index.html";
 
-    /** Guards the one-shot media extraction below (the bridge thread calls it). */
+    /** Guards the one-shot media extraction (the bridge thread calls it). */
     private static final Object MEDIA_LOCK = new Object();
     /** Longest movie the shell is willing to copy out of the APK. */
     private static final long MAX_MEDIA_BYTES = 512L * 1024L * 1024L;
@@ -59,7 +55,7 @@ public class MainActivity extends Activity {
 
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        // Lets "chrome://inspect" on a connected computer see this WebView.
+        // Lets chrome://inspect see this WebView.
         WebView.setWebContentsDebuggingEnabled(true);
 
         webView = new WebView(this);
@@ -92,10 +88,8 @@ public class MainActivity extends Activity {
         settings.setSupportMultipleWindows(false);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
 
-        // The overlay (diagnostics panel + virtual keyboard) is part of the
-        // shell, never of the game: it is read from this APK's own assets and
-        // evaluated into whatever page the WebView loads, so the game files are
-        // left exactly as shipped.
+        // The overlay belongs to the shell. readAsset loads it from this APK, so
+        // game files stay untouched.
         hostScript = readAsset("rpg2android/host.js");
 
         webView.setWebViewClient(new WebViewClient() {
@@ -119,8 +113,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        // RPG Maker only advances its scene while document.hasFocus() is true,
-        // so the WebView itself has to hold window focus.
+        // RPG Maker only advances a scene while document.hasFocus() is true.
         webView.setFocusable(true);
         webView.setFocusableInTouchMode(true);
 
@@ -184,19 +177,9 @@ public class MainActivity extends Activity {
         }
 
         /**
-         * Reports the audio extension the game's own files use, e.g. ".ogg".
-         *
-         * RPG Maker decides that from the user agent instead of from the files:
-         * AudioManager.audioFileExt returns ".ogg" only on a desktop browser and
-         * ".m4a" on every mobile device, because iOS Safari cannot decode ogg.
-         * A game authored on Windows ships ogg only, so on an Android WebView
-         * (which does decode ogg) each BGM/SE request asks for a file the APK
-         * does not contain. The overlay asks here and passes on the extension the
-         * assets really use.
-         *
-         * @return ".ogg" or ".m4a" when every file in an audio folder shares one
-         *         extension, "" when the game mixes them or has no audio (the
-         *         engine's own choice is then kept)
+         * Returns the audio extension the game ships, for example ".ogg", or ""
+         * when it is mixed or missing. RPG Maker guesses ".m4a" on Android, which
+         * Windows games usually do not ship.
          */
         @JavascriptInterface
         public String audioFileExt() {
@@ -224,17 +207,8 @@ public class MainActivity extends Activity {
         }
 
         /**
-         * Copies a movie out of the APK into the app's own files directory and
-         * returns a file:// URL for it, or "" when that is not possible.
-         *
-         * Android's media stack opens media files itself and cannot read a path
-         * that only exists inside an APK: a &lt;video&gt; element pointed at
-         * file:///android_asset/www/movies/x.webm reports an error before its
-         * first frame. RPG Maker hands its media to the page as plain relative
-         * paths (movies/...), so the overlay asks for the file here instead and
-         * gets back a real path the media stack can open.
-         *
-         * @param path game relative path, e.g. "movies/feather.webm"
+         * Copies a movie out of the APK and returns a file:// URL, or "". The
+         * media stack cannot open a path inside an APK.
          */
         @JavascriptInterface
         public String mediaFile(String path) {
@@ -264,8 +238,8 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Throws away copies made by an earlier version of the app: the movies come
-     * from the APK, so a new install may carry different ones.
+     * Drops copies from an older app version, since a new install may ship
+     * different movies.
      */
     private static void prepareMediaDir(File dir, String current) {
         File stamp = new File(dir, ".version");
@@ -289,11 +263,9 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Copies one asset to a real file (via a .part file, so an interrupted copy
-     * is never mistaken for a finished one).
-     *
-     * @return true when the file exists afterwards, false when the asset is
-     *         missing or too large
+     * Copies an asset through a .part file, so an interrupted copy is never
+     * mistaken for a finished one. Returns false when the asset is missing or
+     * too large.
      */
     private static boolean extract(AssetManager assets, String asset, File out) {
         File parent = out.getParentFile();
@@ -415,7 +387,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Sends an Escape key press to the game (maps to "cancel"/menu in RPG Maker). */
+    /** Sends Escape to the game (cancel/menu in RPG Maker). */
     private void sendEscape() {
         if (webView == null) {
             return;
@@ -443,7 +415,7 @@ public class MainActivity extends Activity {
             backFallback();
             return;
         }
-        // Let the overlay consume the press first (close the keyboard/panel).
+        // Let the overlay close the keyboard or panel first.
         webView.evaluateJavascript(
                 "(window.RPG2Android && RPG2Android.handleBack)" +
                         " ? RPG2Android.handleBack() : false",

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""APK Signature Scheme v2 signing/verification in pure Python.
+"""APK Signature Scheme v2 signing and verification in pure Python.
 
-Injection rewrites the APK, so the template signature is invalid afterwards and
-the result has to be re-signed. v2 is enough for ``minSdkVersion 24`` (Android
-7.0, where the scheme was introduced) and needs no Java, no apksigner and no
-third-party packages - just a PEM key/certificate pair.
+Injecting a game rewrites the APK, so the template signature is invalid and the
+result must be signed again. v2 is enough for minSdk 24 and needs no Java or
+third-party packages, only a PEM key/certificate pair.
 
-Layout reference: https://source.android.com/docs/security/features/apksigning/v2
+Layout: https://source.android.com/docs/security/features/apksigning/v2
 """
 from __future__ import annotations
 
@@ -33,9 +32,6 @@ class SignatureError(RuntimeError):
     pass
 
 
-# --------------------------------------------------------------------------
-# DER helpers
-# --------------------------------------------------------------------------
 def _tlv(buf: bytes, off: int) -> tuple[int, int, int, int]:
     """Return (tag, content_start, content_length, next_offset)."""
     if off + 2 > len(buf):
@@ -158,9 +154,6 @@ def parse_rsa_public_key(der: bytes) -> tuple[int, int]:
     return values[0], values[1]
 
 
-# --------------------------------------------------------------------------
-# RSA PKCS#1 v1.5 / SHA-256
-# --------------------------------------------------------------------------
 _SHA256_DIGEST_INFO_PREFIX = bytes.fromhex("3031300d060960864801650304020105000420")
 
 
@@ -195,9 +188,6 @@ def _rsa_verify(data: bytes, signature: bytes, n: int, e: int) -> bool:
     return got == expected
 
 
-# --------------------------------------------------------------------------
-# ZIP / digest plumbing
-# --------------------------------------------------------------------------
 @dataclass
 class ZipInfoAtEocd:
     eocd_offset: int
@@ -236,9 +226,8 @@ def _chunk_hash(chunk: bytes) -> bytes:
 def _content_digest(fp, spans: list) -> bytes:
     """Hash the protected content.
 
-    Each span is either ``(file_offset, length)`` or raw ``bytes`` (used for the
-    EOCD, whose central-directory offset has to be adjusted before hashing).
-    Chunks are 1 MB and run continuously across span boundaries.
+    A span is either (file_offset, length) or raw bytes for the EOCD, whose
+    central-directory offset is adjusted before hashing.
     """
     chunk_digests: list[bytes] = []
     for span in spans:
@@ -246,7 +235,7 @@ def _content_digest(fp, spans: list) -> bytes:
             blocks = iter([bytes(span)])
         else:
             blocks = _file_blocks(fp, *span)
-        # Chunks are per segment: the 1 MB grid restarts at every span.
+        # Chunks restart at every span.
         pending = bytearray()
         for block in blocks:
             pending += block
@@ -292,9 +281,6 @@ def _lp_sequence(items: list[bytes]) -> bytes:
     return struct.pack("<I", sum(len(i) for i in items)) + b"".join(items)
 
 
-# --------------------------------------------------------------------------
-# Signing
-# --------------------------------------------------------------------------
 def sign_v2(apk_path: Path, key: SigningKey) -> None:
     """Sign *apk_path* in place (v2 only), replacing any existing signature."""
     path = Path(apk_path)
@@ -302,8 +288,8 @@ def sign_v2(apk_path: Path, key: SigningKey) -> None:
     with path.open("rb") as fp:
         info = read_zip_info(fp, size)
 
-        # Digests cover the file as it looks *before* the signing block exists,
-        # with the EOCD pointing at where the block will start (== old CD offset).
+        # Digests cover the file before the signing block exists, with the EOCD
+        # pointing at the old central-directory offset.
         fp.seek(info.eocd_offset)
         eocd = fp.read(info.eocd_length)
         spans = [
@@ -313,7 +299,7 @@ def sign_v2(apk_path: Path, key: SigningKey) -> None:
         ]
         digest = _content_digest(fp, spans)
 
-        # Every record inside these sequences is itself length-prefixed.
+        # Every record in these sequences is length-prefixed.
         digest_record = _lp(struct.pack("<I", SIG_RSA_PKCS1_SHA256) + _lp(digest))
         signed_data = (
             _lp_sequence([digest_record])
@@ -352,7 +338,7 @@ def sign_v2(apk_path: Path, key: SigningKey) -> None:
             if not block_bytes:
                 break
             data = bytearray(block_bytes)
-            # The EOCD's central-directory offset has to skip the new block.
+            # The EOCD's central-directory offset must skip the new block.
             start = info.eocd_offset - offset
             if start < len(data):
                 struct.pack_into("<I", data, start + 16, new_cd_offset)
@@ -372,9 +358,6 @@ def _copy_range(src, dst, start: int, end: int) -> None:
         remaining -= len(block)
 
 
-# --------------------------------------------------------------------------
-# Verification
-# --------------------------------------------------------------------------
 def verify_v2(apk_path: Path) -> dict:
     """Verify the v2 signature block and the digests it protects."""
     path = Path(apk_path)
@@ -435,8 +418,8 @@ def verify_v2(apk_path: Path) -> dict:
             value, _ = _read_lp(record, 4)
             sig_map[algorithm] = value
 
-        # Recompute the digest exactly the way a verifier does: the EOCD of the
-        # signed APK claims a CD offset past the block; treat it as block_start.
+        # Recompute the digest like a verifier does: the EOCD of the signed APK
+        # points past the block, so treat that offset as block_start.
         fp.seek(info.eocd_offset)
         eocd = bytearray(fp.read(info.eocd_length))
         struct.pack_into("<I", eocd, 16, block_start)
@@ -494,11 +477,8 @@ def _cert_public_key_der(cert_der: bytes) -> bytes:
     return _spki_public_key_der(fields[5][2])
 
 
-# --------------------------------------------------------------------------
-# Debug key material
-# --------------------------------------------------------------------------
 def ensure_debug_key(material_dir: Path) -> tuple[Path, Path]:
-    """Return (key, cert), generating a throwaway key pair if it is missing."""
+    """Return (key, cert), generating a debug key pair if it is missing."""
     key_path = material_dir / DEBUG_KEY_NAME
     cert_path = material_dir / DEBUG_CERT_NAME
     if key_path.is_file() and cert_path.is_file():
