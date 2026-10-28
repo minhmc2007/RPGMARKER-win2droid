@@ -179,7 +179,32 @@
     // back to the game's URL once.
 
     var MEDIA_SRC = /^(?:\.\/)?(?:movies|videos)\/[^/]+\.(?:webm|mp4|m4v|ogv|ogg)$/i;
-    var media = { hooked: false, routed: 0, missing: 0, fallbacks: 0 };
+    // Other containers the same movie may have been published with.
+    var MEDIA_ALTERNATES = {
+        webm: [".mp4", ".m4v", ".ogv"],
+        mp4: [".webm", ".ogv"],
+        m4v: [".webm"],
+        ogv: [".webm"],
+        ogg: [".webm"]
+    };
+    var media = { hooked: false, routed: 0, missing: 0, fallbacks: 0, swapped: 0 };
+
+    // RPG Maker picks the container from canPlayType(), which is only a guess:
+    // when the WebView reports nothing for 'video/webm; codecs="vp8, vorbis"'
+    // the interpreter asks for a .mp4 that a Windows-made game never shipped.
+    // The shell tries the containers the APK does contain before giving up.
+    function mediaCandidates(path) {
+        var match = /^(.+)\.([a-z0-9]+)$/i.exec(path);
+        var list = [path];
+        if (!match) {
+            return list;
+        }
+        var alternates = MEDIA_ALTERNATES[match[2].toLowerCase()] || [];
+        for (var i = 0; i < alternates.length; i++) {
+            list.push(match[1] + alternates[i]);
+        }
+        return list;
+    }
 
     function mediaFile(path) {
         try {
@@ -229,7 +254,15 @@
             },
             set: function (value) {
                 var path = typeof value === "string" && MEDIA_SRC.test(value) ? value : "";
-                var file = path ? mediaFile(path) : "";
+                var file = "";
+                var used = path;
+                if (path) {
+                    var candidates = mediaCandidates(path);
+                    for (var i = 0; i < candidates.length && !file; i++) {
+                        file = mediaFile(candidates[i]);
+                        used = candidates[i];
+                    }
+                }
                 if (!file) {
                     if (path) {
                         media.missing++;
@@ -237,8 +270,12 @@
                     descriptor.set.call(this, value);
                     return;
                 }
+                if (used !== path) {
+                    media.swapped++;
+                    add("warn", "movie " + path + " is not in the APK; playing " + used + " instead");
+                }
                 var element = this;
-                element.__r2aAsset = path;
+                element.__r2aAsset = used;
                 element.__r2aUrl = file;
                 element.__r2aRetried = false;
                 if (!element.__r2aErrorHook) {
@@ -248,7 +285,7 @@
                     });
                 }
                 if (media.routed === 0) {
-                    add("info", "movie " + path + " plays from app storage");
+                    add("info", "movie " + used + " plays from app storage");
                 }
                 media.routed++;
                 descriptor.set.call(this, file);
@@ -257,6 +294,48 @@
     }
 
     installMediaHook();
+
+    // RPG Maker chooses the audio extension from the user agent, not from the
+    // files: AudioManager.audioFileExt returns ".ogg" only on a desktop browser
+    // and ".m4a" on every mobile device, because iOS Safari cannot decode ogg.
+    // A game authored on Windows ships ogg only, so on an Android WebView (which
+    // does decode ogg) every BGM/SE/BGS request asks for a file the APK does not
+    // contain. The shell reads the extension the audio folders really use
+    // (RPG2Host.audioFileExt) and hands the game that one instead; a game that
+    // mixes extensions, or has no audio, is left with the engine's choice.
+    var audio = { ext: "", hooked: false, warned: false };
+
+    function installAudioExtHook() {
+        var manager = window.AudioManager;
+        if (audio.hooked || !manager || typeof manager.audioFileExt !== "function") {
+            return;
+        }
+        var shipped = "";
+        try {
+            if (window.RPG2Host && typeof window.RPG2Host.audioFileExt === "function") {
+                shipped = String(window.RPG2Host.audioFileExt() || "");
+            }
+        } catch (e) {
+            add("warn", "audio extension lookup failed: " + describe(e));
+        }
+        if (!shipped) {
+            return;
+        }
+        audio.hooked = true;
+        audio.ext = shipped;
+        var original = manager.audioFileExt;
+        manager.audioFileExt = function () {
+            var chosen = original.apply(this, arguments);
+            if (chosen !== shipped && !audio.warned) {
+                audio.warned = true;
+                add("info", "audio plays from " + shipped +
+                    " (the game ships it; the engine asked for " + chosen + ")");
+            }
+            return shipped;
+        };
+    }
+
+    installAudioExtHook();
 
     // ---------------------------------------------------------------- probing
 
@@ -595,13 +674,16 @@
     function audioInfo() {
         try {
             var bits = [];
-            if (window.AudioManager) {
-                bits.push("bgm=" + (AudioManager._currentBgm ? AudioManager._currentBgm.name : "-"));
-                bits.push("me=" + (AudioManager._currentMe ? AudioManager._currentMe.name : "-"));
+            var manager = window.AudioManager;
+            if (manager) {
+                bits.push("bgm=" + (manager._currentBgm ? manager._currentBgm.name : "-"));
+                bits.push("me=" + (manager._currentMe ? manager._currentMe.name : "-"));
             }
-            if (window.WebAudio) {
-                bits.push("ctx=" + (WebAudio._context ? WebAudio._context.state : "?"));
+            var webAudio = window.WebAudio;
+            if (webAudio) {
+                bits.push("ctx=" + (webAudio._context ? webAudio._context.state : "?"));
             }
+            bits.push("ext=" + (audio.ext || "-"));
             return "audio " + bits.join(" ");
         } catch (e) {
             return "audio=?" + describe(e);
@@ -2455,6 +2537,7 @@
         ensureKeyboard();
         ensurePadButton();
         ensurePad();
+        installAudioExtHook();
         hookGameActive();
         hookRenderProbe();
         hookSceneTrace();

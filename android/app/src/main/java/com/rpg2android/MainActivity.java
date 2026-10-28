@@ -27,6 +27,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Arrays;
 
 /**
  * Minimal WebView host for RPG Maker MV / MZ games.
@@ -44,6 +45,8 @@ public class MainActivity extends Activity {
     private static final Object MEDIA_LOCK = new Object();
     /** Longest movie the shell is willing to copy out of the APK. */
     private static final long MAX_MEDIA_BYTES = 512L * 1024L * 1024L;
+    /** Audio folders RPG Maker ships, in the order the extension is probed. */
+    private static final String[] AUDIO_FOLDERS = {"bgm", "bgs", "me", "se", "vo"};
 
     private WebView webView;
     private long lastBackPress = 0L;
@@ -164,6 +167,8 @@ public class MainActivity extends Activity {
     /** Receives the diagnostics that assets/rpg2android/host.js collects. */
     private static final class HostBridge {
         private final Context context;
+        /** Answer of {@link #audioFileExt()}, cached after the first call. */
+        private String audioExt;
 
         HostBridge(Context context) {
             this.context = context;
@@ -176,6 +181,46 @@ public class MainActivity extends Activity {
             }
             String text = message.length() > 2000 ? message.substring(0, 2000) : message;
             Log.i("RPG2Android", text);
+        }
+
+        /**
+         * Reports the audio extension the game's own files use, e.g. ".ogg".
+         *
+         * RPG Maker decides that from the user agent instead of from the files:
+         * AudioManager.audioFileExt returns ".ogg" only on a desktop browser and
+         * ".m4a" on every mobile device, because iOS Safari cannot decode ogg.
+         * A game authored on Windows ships ogg only, so on an Android WebView
+         * (which does decode ogg) each BGM/SE request asks for a file the APK
+         * does not contain. The overlay asks here and passes on the extension the
+         * assets really use.
+         *
+         * @return ".ogg" or ".m4a" when every file in an audio folder shares one
+         *         extension, "" when the game mixes them or has no audio (the
+         *         engine's own choice is then kept)
+         */
+        @JavascriptInterface
+        public String audioFileExt() {
+            synchronized (MEDIA_LOCK) {
+                if (audioExt != null) {
+                    return audioExt;
+                }
+                audioExt = "";
+                for (String folder : AUDIO_FOLDERS) {
+                    try {
+                        String ext = AudioAssets.fileExt(Arrays.asList(
+                                context.getAssets().list("www/audio/" + folder)));
+                        if (!ext.isEmpty()) {
+                            audioExt = ext;
+                            break;
+                        }
+                    } catch (IOException e) {
+                        // No such folder in this game; try the next one.
+                    }
+                }
+                Log.i(TAG, "game audio extension: " +
+                        (audioExt.isEmpty() ? "mixed/unknown (engine default)" : audioExt));
+                return audioExt;
+            }
         }
 
         /**

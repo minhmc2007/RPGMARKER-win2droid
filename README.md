@@ -92,6 +92,8 @@ editor and the v2 signer are plain standard library code.
   the APK, so `movies/*` is extracted into the app's own files directory the
   first time a `<video>` asks for it and the element is pointed at that copy
   (see *Movies* below).
+* BGM/SE/BGS play from the extension the game actually ships, not from the one
+  RPG Maker guesses from the user agent (see *Audio* below).
 * The WebView is given window focus explicitly, and the injected host script
   keeps RPG Maker updating whenever the page is visible. MZ otherwise skips
   scene updates unless `window.top.document.hasFocus()` is true, which is
@@ -125,6 +127,51 @@ So the shell extracts the file instead:
 The diagnostics panel reports which route an element ended up on:
 `video feather.webm app-storage ...` (playing the extracted copy) or
 `game-after-copy` (the copy failed, the game's own URL is in use).
+
+### Movie containers
+
+RPG Maker also chooses the container with a guess: `Game_Interpreter` asks for
+`.webm` when `canPlayType('video/webm; codecs="vp8, vorbis"')` says yes, and for
+`.mp4` otherwise. Some WebViews answer that question with an empty string even
+though they decode WebM fine, and a game authored on Windows normally ships
+`movies/*.webm` only — so the *Play Movie* command asks for an `.mp4` that was
+never in the APK.
+
+For that reason the `src` hook asks the shell for the requested file first and,
+when it is not there, for the same name with the other container extensions
+(`.webm`, `.mp4`, `.m4v`, `.ogv`) before giving up. A miss is logged as
+`movie movies/x.mp4 is not in the APK; playing movies/x.webm instead`, and the
+one-shot fallback then points at the container that exists rather than the one
+the engine asked for. A movie that exists as requested is looked up once, never
+twice.
+
+### Audio
+
+`AudioManager.audioFileExt` picks the extension from the **user agent**, not
+from the files:
+
+```js
+if (WebAudio.canPlayOgg() && !Utils.isMobileDevice()) {
+    return ".ogg";
+} else {
+    return ".m4a";
+}
+```
+
+The mobile branch exists because iOS Safari cannot decode ogg. On an Android
+WebView — Chromium, which decodes ogg perfectly well — any mobile user agent
+therefore makes every BGM/SE/BGS request ask for `.m4a`, while a game authored
+on Windows ships `audio/*/*.ogg` only. The result is silence and `LoadError`s
+for audio that exists.
+
+So the shell reports the extension the assets really use
+(`RPG2Host.audioFileExt`, backed by `AudioAssets`) and the overlay hands the game
+that value: it looks at `audio/bgm`, `bgs`, `me`, `se`, `vo` and returns the
+extension when every file in a folder shares one, `""` when the game mixes
+extensions or has no audio — in which case the engine's own choice is kept. The
+first time the two disagree, one line is logged:
+`audio plays from .ogg (the game ships it; the engine asked for .m4a)`. The
+diagnostics panel shows the decision as `audio bgm=... ext=.ogg`.
 
 ## Shell overlay: diagnostics, virtual keyboard, on-screen buttons
 
@@ -182,6 +229,7 @@ android/                 Java WebView app + Gradle project (built only in CI)
   app/src/main/java/com/rpg2android/MainActivity.java
   app/src/main/assets/www/index.html   placeholder, replaced at inject time
   app/src/main/java/com/rpg2android/MediaPath.java   movie path rules (unit tested)
+  app/src/main/java/com/rpg2android/AudioAssets.java  shipped audio extension (unit tested)
   app/src/main/assets/rpg2android/host.js   shell overlay: diagnostics + keyboard + buttons + media
 build_apk.py             CLI: inject a game into the template and sign it
 tools/identity.py        game root detection, name + package id
