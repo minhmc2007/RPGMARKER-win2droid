@@ -139,7 +139,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "prebuilt/base.apk is unchanged"
           else
-            git commit -m "chore: refresh prebuilt base APK [skip ci]"
+            git commit -m "chore: refresh prebuilt base APK"
             git push
           fi
 
